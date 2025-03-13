@@ -109,6 +109,95 @@ if not args.simulation:
 else:
     logger.info("Running in simulation mode - camera not initialized")
 
+# MPU6050 data and thread
+mpu_data = {
+    'accel_x': 0.0,
+    'accel_y': 0.0,
+    'accel_z': 0.0,
+    'gyro_x': 0.0,
+    'gyro_y': 0.0,
+    'gyro_z': 0.0,
+    'temperature': 0.0
+}
+mpu_thread = None
+mpu_running = False
+
+# Function to read MPU6050 data
+def read_mpu6050_data():
+    global mpu_running, mpu_data
+    
+    logger.info("MPU6050 data thread started")
+    
+    while mpu_running and mpu6050_available:
+        try:
+            if not args.simulation:
+                # 这里调用适当的MPU6050读取函数获取真实数据
+                try:
+                    # WHO_AM_I寄存器地址
+                    WHO_AM_I = 0x75
+                    # 电源管理寄存器
+                    PWR_MGMT_1 = 0x6B
+                    # 加速度数据寄存器起始地址
+                    ACCEL_XOUT_H = 0x3B
+                    # 温度数据寄存器起始地址
+                    TEMP_OUT_H = 0x41
+                    # 陀螺仪数据寄存器起始地址
+                    GYRO_XOUT_H = 0x43
+                    
+                    # 确保设备唤醒
+                    bus.write_byte_data(mpu_addr, PWR_MGMT_1, 0)
+                    
+                    # 读取加速度数据
+                    accel_data = bus.read_i2c_block_data(mpu_addr, ACCEL_XOUT_H, 6)
+                    accel_x = (accel_data[0] << 8 | accel_data[1]) / 16384.0  # 转换为g
+                    accel_y = (accel_data[2] << 8 | accel_data[3]) / 16384.0  # 转换为g
+                    accel_z = (accel_data[4] << 8 | accel_data[5]) / 16384.0  # 转换为g
+                    
+                    # 读取温度数据
+                    temp_data = bus.read_i2c_block_data(mpu_addr, TEMP_OUT_H, 2)
+                    temperature = ((temp_data[0] << 8 | temp_data[1]) / 340.0) + 36.53  # 转换为摄氏度
+                    
+                    # 读取陀螺仪数据
+                    gyro_data = bus.read_i2c_block_data(mpu_addr, GYRO_XOUT_H, 6)
+                    gyro_x = (gyro_data[0] << 8 | gyro_data[1]) / 131.0  # 转换为度/秒
+                    gyro_y = (gyro_data[2] << 8 | gyro_data[3]) / 131.0  # 转换为度/秒
+                    gyro_z = (gyro_data[4] << 8 | gyro_data[5]) / 131.0  # 转换为度/秒
+                    
+                    # 更新全局数据
+                    mpu_data = {
+                        'accel_x': round(accel_x, 2),
+                        'accel_y': round(accel_y, 2),
+                        'accel_z': round(accel_z, 2),
+                        'gyro_x': round(gyro_x, 2),
+                        'gyro_y': round(gyro_y, 2),
+                        'gyro_z': round(gyro_z, 2),
+                        'temperature': round(temperature, 2)
+                    }
+                except Exception as e:
+                    logger.error(f"Error reading MPU6050 data: {e}")
+            else:
+                # 在模拟模式下生成随机数据
+                mpu_data = {
+                    'accel_x': round(np.random.uniform(-1, 1), 2),
+                    'accel_y': round(np.random.uniform(-1, 1), 2),
+                    'accel_z': round(np.random.uniform(0, 2), 2),  # Z轴通常有重力加速度
+                    'gyro_x': round(np.random.uniform(-10, 10), 2),
+                    'gyro_y': round(np.random.uniform(-10, 10), 2),
+                    'gyro_z': round(np.random.uniform(-10, 10), 2),
+                    'temperature': round(np.random.uniform(20, 30), 2)
+                }
+            
+            # 发送数据给客户端
+            socketio.emit('mpu6050_data', mpu_data)
+            
+            # 限制更新频率
+            time.sleep(0.5)  # 2Hz更新率
+        except Exception as e:
+            logger.error(f"Error in MPU6050 data thread: {e}")
+            time.sleep(1)
+    
+    logger.info("MPU6050 data thread stopped")
+
 # Simulated camera frame generator
 class SimulatedCamera:
     def __init__(self):
@@ -181,11 +270,34 @@ gimbal_v_angle = 40  # Initial vertical angle (PWM10)
 mpu6050_available = False
 if not args.simulation:
     try:
-        # This is a placeholder for MPU6050 initialization
-        # In a real implementation, you would import and initialize the MPU6050 library
-        logger.info("MPU6050 check completed")
+        # 尝试实际初始化MPU6050
+        # 这里只是一个示例，实际代码取决于您的MPU6050库
+        import smbus2 as smbus
+        bus = smbus.SMBus(1)
+        # MPU6050的I2C地址通常是0x68或0x69
+        mpu_addr = 0x68
+        # 尝试读取WHO_AM_I寄存器 (寄存器地址通常是0x75)
+        # 如果能读到数据，说明MPU6050连接正常
+        try:
+            bus.write_byte_data(mpu_addr, 0x6B, 0)  # 唤醒MPU6050
+            whoami = bus.read_byte_data(mpu_addr, 0x75)
+            if whoami:
+                mpu6050_available = True
+                logger.info(f"MPU6050 initialized successfully, WHO_AM_I: {whoami}")
+        except Exception as inner_e:
+            logger.info(f"MPU6050 not responding on address 0x68: {inner_e}")
+            # 尝试备用地址0x69
+            try:
+                mpu_addr = 0x69
+                bus.write_byte_data(mpu_addr, 0x6B, 0)  # 唤醒MPU6050
+                whoami = bus.read_byte_data(mpu_addr, 0x75)
+                if whoami:
+                    mpu6050_available = True
+                    logger.info(f"MPU6050 initialized successfully on alternate address, WHO_AM_I: {whoami}")
+            except Exception as alt_e:
+                logger.info(f"MPU6050 not responding on alternate address 0x69: {alt_e}")
     except Exception as e:
-        logger.error(f"MPU6050 not available: {e}")
+        logger.error(f"MPU6050 initialization failed: {e}")
 else:
     logger.info("Running in simulation mode - MPU6050 not initialized")
 
@@ -266,7 +378,8 @@ def generate_frames():
             success, frame = camera.read()
             if not success:
                 logger.error("Failed to read frame from camera")
-                break
+                time.sleep(0.1)
+                continue
                 
             # Process frame (resize, add overlay, etc.)
             frame = cv2.resize(frame, (320, 240))
@@ -277,23 +390,36 @@ def generate_frames():
             cv2.putText(frame, f"H: {gimbal_h_angle}°, V: {gimbal_v_angle}°", (10, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             
-            # Convert to JPEG
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame_bytes = buffer.tobytes()
+            # 确保图像颜色空间正确 (Ensure correct color space)
+            if len(frame.shape) < 3:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            elif frame.shape[2] == 1:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             
-            # Emit frame to clients
-            socketio.emit('video_frame', {'frame': frame_bytes})
-            time.sleep(1/15)  # Limit to 15 FPS
+            # 使用高质量的JPEG编码 (Use high quality JPEG encoding)
+            try:
+                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
+                _, buffer = cv2.imencode('.jpg', frame, encode_param)
+                frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                
+                # Emit frame to clients using base64 encoding
+                socketio.emit('video_frame', {'frame': frame_base64})
+                time.sleep(1/15)  # Limit to 15 FPS
+            except Exception as encode_error:
+                logger.error(f"Frame encoding error: {encode_error}")
+                time.sleep(0.1)
             
         except Exception as e:
             logger.error(f"Error in video streaming: {e}")
-            break
+            time.sleep(0.1)
     
     logger.info("Video streaming stopped")
 
 # Socket.IO events
 @socketio.on('connect')
 def handle_connect():
+    global mpu_running, mpu_thread
+    
     logger.info(f"Client connected: {request.sid}")
     emit('status_update', {
         'robot_available': robot_available,
@@ -302,16 +428,34 @@ def handle_connect():
         'slam_available': slam_initialized,
         'slam_active': slam_active
     })
+    
+    # Start MPU6050 data thread if it's available and not already running
+    if mpu6050_available and not mpu_running:
+        mpu_running = True
+        mpu_thread = threading.Thread(target=read_mpu6050_data)
+        mpu_thread.daemon = True
+        mpu_thread.start()
+        logger.info("MPU6050 data thread started for new client")
 
 @socketio.on('disconnect')
-def handle_disconnect():
+def handle_disconnect(sid=None):
+    global mpu_running
+    
     logger.info(f"Client disconnected: {request.sid}")
     if robot_available:
         robot.t_stop(0)
+        
+    # Check if there are any remaining clients before stopping MPU thread
+    # Use the Socket.IO server's active connections instead of request.namespace.rooms
+    if len(socketio.server.eio.sockets) <= 1 and mpu_running:  # Only one or no connections left
+        mpu_running = False
+        logger.info("Stopping MPU6050 data thread - no clients left")
 
 @socketio.on('start_stream')
 def handle_start_stream():
     global is_streaming, streaming_thread
+    
+    logger.info(f"Start stream request from client: {request.sid}")
     
     if not is_streaming and camera_available:
         is_streaming = True
@@ -321,16 +465,29 @@ def handle_start_stream():
         emit('stream_status', {'status': 'started'})
         logger.info("Video streaming started")
     else:
-        emit('stream_status', {'status': 'error', 'message': 'Camera not available or already streaming'})
+        if not camera_available:
+            logger.error("Camera not available for streaming")
+            emit('stream_status', {'status': 'error', 'message': 'Camera not available'})
+        elif is_streaming:
+            logger.info("Stream already active, sending status update")
+            emit('stream_status', {'status': 'started'})
+        else:
+            logger.error("Unknown error starting stream")
+            emit('stream_status', {'status': 'error', 'message': 'Unknown error starting stream'})
 
 @socketio.on('stop_stream')
 def handle_stop_stream():
     global is_streaming
     
+    logger.info(f"Stop stream request from client: {request.sid}")
+    
     if is_streaming:
         is_streaming = False
         emit('stream_status', {'status': 'stopped'})
         logger.info("Video streaming stopped")
+    else:
+        logger.info("No active stream to stop")
+        emit('stream_status', {'status': 'stopped'})
 
 @socketio.on('start_slam')
 def handle_start_slam():
@@ -388,8 +545,8 @@ def handle_car_control(data):
         x = data.get('x', 0)  # -1 (left) to 1 (right)
         y = data.get('y', 0)  # -1 (backward) to 1 (forward)
         
-        # Calculate speed (0-30 as specified in requirements)
-        speed = min(30, int(abs(max(x, y, key=abs)) * 30))
+        # Calculate speed (0-60 as specified in updated requirements)
+        speed = min(60, int(abs(max(x, y, key=abs)) * 60))
         current_speed = speed
         
         # Determine movement direction
@@ -406,12 +563,12 @@ def handle_car_control(data):
         elif abs(x) > abs(y):  # Left/right movement dominates
             # Reduce speed to 70% when turning as per requirements
             turn_speed = int(speed * 0.7)
-            if x > 0.1:  # Right
-                robot.turnRight(turn_speed, 0.1)
-                logger.info(f"Turning right at speed {turn_speed}")
-            elif x < -0.1:  # Left
+            if x > 0.1:  # Right (修正为左转)
                 robot.turnLeft(turn_speed, 0.1)
                 logger.info(f"Turning left at speed {turn_speed}")
+            elif x < -0.1:  # Left (修正为右转)
+                robot.turnRight(turn_speed, 0.1)
+                logger.info(f"Turning right at speed {turn_speed}")
             else:  # Stop
                 robot.t_stop(0.1)
                 logger.info("Stopped")
@@ -436,6 +593,9 @@ def handle_gimbal_control(data):
         x = data.get('x', 0)  # -1 (left) to 1 (right)
         y = data.get('y', 0)  # -1 (down) to 1 (up)
         
+        # 反转Y轴值以纠正上下方向
+        y = -y
+        
         # Calculate new angles
         # Horizontal: 80° ± 45° (35° to 125°)
         # Vertical: 40° ± 45° (0° to 85°)
@@ -450,7 +610,7 @@ def handle_gimbal_control(data):
             h_change = int(x * 45)
             gimbal_h_angle = max(35, min(125, 80 + h_change))
             
-            # Map joystick y (-1 to 1) to angle change (-40 to 45)
+            # Map joystick y (-1 to 1) to angle change (-45 to 45)
             v_change = int(y * 45)
             gimbal_v_angle = max(0, min(85, 40 + v_change))
         
@@ -486,7 +646,7 @@ if __name__ == '__main__':
         
         # Start the Flask app with SocketIO
         logger.info("Starting server on 0.0.0.0:5000")
-        socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+        socketio.run(app, host='0.0.0.0', port=5000, debug=False)
     except KeyboardInterrupt:
         logger.info("Server shutdown requested")
     finally:
@@ -497,4 +657,8 @@ if __name__ == '__main__':
             robot.t_stop(0)
         if slam_active and slam_initialized:
             slam.stop()
+        # Stop MPU6050 thread if running
+        if mpu_running:
+            mpu_running = False
+            logger.info("Stopped MPU6050 data thread during shutdown")
         logger.info("Server shutdown complete") 

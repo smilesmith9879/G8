@@ -19,6 +19,14 @@ const stopSlamBtn = document.getElementById('stop-slam');
 const posXDisplay = document.getElementById('pos-x');
 const posYDisplay = document.getElementById('pos-y');
 const posZDisplay = document.getElementById('pos-z');
+// MPU6050 sensor data displays
+const accelXDisplay = document.getElementById('accel-x');
+const accelYDisplay = document.getElementById('accel-y');
+const accelZDisplay = document.getElementById('accel-z');
+const gyroXDisplay = document.getElementById('gyro-x');
+const gyroYDisplay = document.getElementById('gyro-y');
+const gyroZDisplay = document.getElementById('gyro-z');
+const temperatureDisplay = document.getElementById('temperature');
 
 // Canvas context
 const ctx = videoCanvas.getContext('2d');
@@ -63,8 +71,10 @@ socket.on('status_update', (data) => {
 });
 
 socket.on('video_frame', (data) => {
-    if (isStreaming) {
+    if (data && data.frame) {
         displayVideoFrame(data.frame);
+    } else {
+        console.error('Received invalid video frame data');
     }
 });
 
@@ -76,16 +86,11 @@ socket.on('stream_status', (data) => {
         startStreamBtn.disabled = true;
         stopStreamBtn.disabled = false;
     } else if (data.status === 'stopped') {
-        isStreaming = false;
-        videoPlaceholder.style.display = 'flex';
-        videoCanvas.style.display = 'none';
-        startStreamBtn.disabled = false;
-        stopStreamBtn.disabled = true;
+        stopStream();
     } else if (data.status === 'error') {
+        console.error(`Stream error: ${data.message}`);
         alert(`Stream error: ${data.message}`);
-        isStreaming = false;
-        startStreamBtn.disabled = false;
-        stopStreamBtn.disabled = true;
+        stopStream();
     }
 });
 
@@ -143,6 +148,17 @@ socket.on('gimbal_response', (data) => {
     }
 });
 
+socket.on('mpu6050_data', (data) => {
+    // Update MPU6050 data displays
+    if (accelXDisplay) accelXDisplay.textContent = data.accel_x;
+    if (accelYDisplay) accelYDisplay.textContent = data.accel_y;
+    if (accelZDisplay) accelZDisplay.textContent = data.accel_z;
+    if (gyroXDisplay) gyroXDisplay.textContent = data.gyro_x;
+    if (gyroYDisplay) gyroYDisplay.textContent = data.gyro_y;
+    if (gyroZDisplay) gyroZDisplay.textContent = data.gyro_z;
+    if (temperatureDisplay) temperatureDisplay.textContent = data.temperature;
+});
+
 // Function to update status indicators
 function updateStatusIndicators(data) {
     const robotStatus = document.getElementById('robot-status');
@@ -180,33 +196,38 @@ function updateStatusIndicators(data) {
 
 // Function to display video frame
 function displayVideoFrame(frameData) {
-    const img = new Image();
-    img.onload = () => {
-        // Clear canvas
-        ctx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
-        
-        // Draw image
-        videoCanvas.width = img.width;
-        videoCanvas.height = img.height;
-        ctx.drawImage(img, 0, 0, videoCanvas.width, videoCanvas.height);
-    };
-    
-    // Convert binary frame data to base64
-    const base64Frame = arrayBufferToBase64(frameData);
-    img.src = 'data:image/jpeg;base64,' + base64Frame;
-}
-
-// Helper function to convert ArrayBuffer to Base64
-function arrayBufferToBase64(buffer) {
-    let binary = '';
-    const bytes = new Uint8Array(buffer);
-    const len = bytes.byteLength;
-    
-    for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(bytes[i]);
+    if (!frameData) {
+        console.error("Empty frame data received");
+        return;
     }
     
-    return window.btoa(binary);
+    // 确保canvas已初始化
+    if (!videoCanvas.width || !videoCanvas.height) {
+        videoCanvas.width = 320;
+        videoCanvas.height = 240;
+    }
+    
+    try {
+        const img = new Image();
+        
+        // 图像加载错误处理
+        img.onerror = () => {
+            console.error("Failed to load image from base64 data");
+        };
+        
+        img.onload = () => {
+            // Clear canvas
+            ctx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
+            
+            // Draw image
+            ctx.drawImage(img, 0, 0, videoCanvas.width, videoCanvas.height);
+        };
+        
+        // Use base64 encoded frame directly
+        img.src = 'data:image/jpeg;base64,' + frameData;
+    } catch (e) {
+        console.error("Error displaying video frame:", e);
+    }
 }
 
 // Initialize joysticks
@@ -225,8 +246,8 @@ function initJoysticks() {
     carJoystick = nipplejs.create(carJoystickOptions);
     
     carJoystick.on('move', (evt, data) => {
-        const x = parseFloat((data.vector.x).toFixed(2));
-        const y = parseFloat((-data.vector.y).toFixed(2)); // Invert Y axis
+        const x = parseFloat((-data.vector.x).toFixed(2));
+        const y = parseFloat((data.vector.y).toFixed(2));
         
         carJoystickData = { x, y };
         
@@ -261,8 +282,8 @@ function initJoysticks() {
     cameraJoystick = nipplejs.create(cameraJoystickOptions);
     
     cameraJoystick.on('move', (evt, data) => {
-        const x = parseFloat((data.vector.x).toFixed(2));
-        const y = parseFloat((-data.vector.y).toFixed(2)); // Invert Y axis
+        const x = parseFloat((-data.vector.x).toFixed(2));
+        const y = parseFloat((data.vector.y).toFixed(2));
         
         cameraJoystickData = { x, y };
     });
@@ -334,6 +355,20 @@ startStreamBtn.addEventListener('click', startStream);
 stopStreamBtn.addEventListener('click', stopStream);
 startSlamBtn.addEventListener('click', startSlam);
 stopSlamBtn.addEventListener('click', stopSlam);
+
+// Helper function to convert ArrayBuffer to Base64 (不需要此函数，直接使用base64)
+// 保留此函数以兼容可能的历史代码，但实际上不再使用它
+function arrayBufferToBase64(buffer) {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const len = bytes.byteLength;
+    
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    
+    return window.btoa(binary);
+}
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
