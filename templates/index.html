@@ -63,67 +63,93 @@
         </header>
 
         <main>
-            <div class="video-container">
-                <div class="video-feed" id="video-feed">
-                    <div class="video-placeholder">
-                        <i class="fas fa-video"></i>
-                        <p>Video feed will appear here</p>
+            <div class="top-row">
+                <div class="video-container">
+                    <div class="video-feed" id="video-feed">
+                        <div class="video-placeholder">
+                            <i class="fas fa-video"></i>
+                            <p>Video feed will appear here</p>
+                        </div>
+                        <canvas id="video-canvas"></canvas>
                     </div>
-                    <canvas id="video-canvas"></canvas>
-                </div>
-                <div class="video-controls">
-                    <button id="start-stream" class="btn btn-primary">
-                        <i class="fas fa-play"></i> Start Stream
-                    </button>
-                    <button id="stop-stream" class="btn btn-danger" disabled>
-                        <i class="fas fa-stop"></i> Stop Stream
-                    </button>
-                </div>
-            </div>
-
-            <div class="control-container">
-                <div class="joystick-container">
-                    <div class="joystick-label">Car Control</div>
-                    <div class="joystick" id="car-joystick"></div>
-                    <div class="joystick-info" id="car-joystick-info">
-                        <div>X: <span id="car-x">0</span></div>
-                        <div>Y: <span id="car-y">0</span></div>
-                        <div>Speed: <span id="car-speed">0</span></div>
-                    </div>
-                </div>
-
-                <div class="joystick-container">
-                    <div class="joystick-label">Camera Control</div>
-                    <div class="joystick" id="camera-joystick"></div>
-                    <div class="joystick-info" id="camera-joystick-info">
-                        <div>H: <span id="camera-h">80°</span></div>
-                        <div>V: <span id="camera-v">40°</span></div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="map-container">
-                <div class="map-header">
-                    <h2>Environment Map</h2>
-                    <div class="map-controls">
-                        <button id="start-slam" class="btn btn-primary" {% if not slam_available %}disabled{% endif %}>
-                            <i class="fas fa-map-marked-alt"></i> Start SLAM
+                    <div class="video-controls">
+                        <button id="start-stream" class="btn btn-primary">
+                            <i class="fas fa-play"></i> Start Stream
                         </button>
-                        <button id="stop-slam" class="btn btn-danger" disabled>
-                            <i class="fas fa-stop"></i> Stop SLAM
+                        <button id="stop-stream" class="btn btn-danger" disabled>
+                            <i class="fas fa-stop"></i> Stop Stream
                         </button>
                     </div>
                 </div>
-                <div id="map-placeholder">
-                    <i class="fas fa-map"></i>
-                    <p>Map will be displayed here when SLAM is active</p>
+
+                <div class="map-container">
+                    <div class="map-header">
+                        <h2>Environment Map</h2>
+                        <div class="map-controls">
+                            <button id="start-slam" class="btn btn-primary" {% if not slam_available %}disabled{% endif %}>
+                                <i class="fas fa-map-marked-alt"></i> Start SLAM
+                            </button>
+                            <button id="stop-slam" class="btn btn-danger" disabled>
+                                <i class="fas fa-stop"></i> Stop SLAM
+                            </button>
+                        </div>
+                    </div>
+                    <div id="map-placeholder">
+                        <i class="fas fa-map"></i>
+                        <p>Map will be displayed here when SLAM is active</p>
+                    </div>
+                    <div id="map-display">
+                        <img id="map-image" src="" alt="SLAM Map">
+                        <div class="position-info">
+                            <div>X: <span id="pos-x">0.00</span>m</div>
+                            <div>Y: <span id="pos-y">0.00</span>m</div>
+                            <div>Z: <span id="pos-z">0.00</span>m</div>
+                        </div>
+                    </div>
                 </div>
-                <div id="map-display">
-                    <img id="map-image" src="" alt="SLAM Map">
-                    <div class="position-info">
-                        <div>X: <span id="pos-x">0.00</span>m</div>
-                        <div>Y: <span id="pos-y">0.00</span>m</div>
-                        <div>Z: <span id="pos-z">0.00</span>m</div>
+            </div>
+
+            <div class="bottom-row">
+                <div class="control-container">
+                    <div class="joystick-container">
+                        <div class="joystick-label">Car Control</div>
+                        <div class="joystick" id="car-joystick"></div>
+                        <div class="joystick-info" id="car-joystick-info">
+                            <div>X: <span id="car-x">0</span></div>
+                            <div>Y: <span id="car-y">0</span></div>
+                            <div>Speed: <span id="car-speed">0</span></div>
+                        </div>
+                    </div>
+
+                    <div class="joystick-container">
+                        <div class="joystick-label">Camera Control</div>
+                        <div class="joystick" id="camera-joystick"></div>
+                        <div class="joystick-info" id="camera-joystick-info">
+                            <div>H: <span id="camera-h">80°</span></div>
+                            <div>V: <span id="camera-v">40°</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sensor-container">
+                    <h2>MPU6050 Sensor Data</h2>
+                    <div class="sensor-data">
+                        <div class="data-group">
+                            <h3>Acceleration</h3>
+                            <div class="data-item">X: <span id="accel-x">0.00</span> g</div>
+                            <div class="data-item">Y: <span id="accel-y">0.00</span> g</div>
+                            <div class="data-item">Z: <span id="accel-z">0.00</span> g</div>
+                        </div>
+                        <div class="data-group">
+                            <h3>Gyroscope</h3>
+                            <div class="data-item">X: <span id="gyro-x">0.00</span> °/s</div>
+                            <div class="data-item">Y: <span id="gyro-y">0.00</span> °/s</div>
+                            <div class="data-item">Z: <span id="gyro-z">0.00</span> °/s</div>
+                        </div>
+                        <div class="data-group">
+                            <h3>Temperature</h3>
+                            <div class="data-item"><span id="temperature">0.00</span> °C</div>
+                        </div>
                     </div>
                 </div>
             </div>

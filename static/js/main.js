@@ -19,6 +19,14 @@ const stopSlamBtn = document.getElementById('stop-slam');
 const posXDisplay = document.getElementById('pos-x');
 const posYDisplay = document.getElementById('pos-y');
 const posZDisplay = document.getElementById('pos-z');
+// MPU6050 sensor data displays
+const accelXDisplay = document.getElementById('accel-x');
+const accelYDisplay = document.getElementById('accel-y');
+const accelZDisplay = document.getElementById('accel-z');
+const gyroXDisplay = document.getElementById('gyro-x');
+const gyroYDisplay = document.getElementById('gyro-y');
+const gyroZDisplay = document.getElementById('gyro-z');
+const temperatureDisplay = document.getElementById('temperature');
 
 // Canvas context
 const ctx = videoCanvas.getContext('2d');
@@ -143,6 +151,17 @@ socket.on('gimbal_response', (data) => {
     }
 });
 
+socket.on('mpu6050_data', (data) => {
+    // Update MPU6050 data displays
+    if (accelXDisplay) accelXDisplay.textContent = data.accel_x;
+    if (accelYDisplay) accelYDisplay.textContent = data.accel_y;
+    if (accelZDisplay) accelZDisplay.textContent = data.accel_z;
+    if (gyroXDisplay) gyroXDisplay.textContent = data.gyro_x;
+    if (gyroYDisplay) gyroYDisplay.textContent = data.gyro_y;
+    if (gyroZDisplay) gyroZDisplay.textContent = data.gyro_z;
+    if (temperatureDisplay) temperatureDisplay.textContent = data.temperature;
+});
+
 // Function to update status indicators
 function updateStatusIndicators(data) {
     const robotStatus = document.getElementById('robot-status');
@@ -181,18 +200,32 @@ function updateStatusIndicators(data) {
 // Function to display video frame
 function displayVideoFrame(frameData) {
     const img = new Image();
+    
+    // 图像加载错误处理
+    img.onerror = () => {
+        console.error("Failed to load image from base64 data");
+    };
+    
     img.onload = () => {
+        // 确保canvas已初始化
+        if (!videoCanvas.width || !videoCanvas.height) {
+            videoCanvas.width = 320;
+            videoCanvas.height = 240;
+        }
+        
         // Clear canvas
         ctx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
         
         // Draw image
-        videoCanvas.width = img.width;
-        videoCanvas.height = img.height;
         ctx.drawImage(img, 0, 0, videoCanvas.width, videoCanvas.height);
     };
     
     // Use base64 encoded frame directly
-    img.src = 'data:image/jpeg;base64,' + frameData;
+    try {
+        img.src = 'data:image/jpeg;base64,' + frameData;
+    } catch (e) {
+        console.error("Error setting image source:", e);
+    }
 }
 
 // Initialize joysticks
