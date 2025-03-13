@@ -410,7 +410,7 @@ def slam_processing_thread():
 
 # Video streaming function
 def generate_frames():
-    global is_streaming, camera_available
+    global is_streaming, camera_available, camera
     
     logger.info("Video streaming thread started")
     frame_count = 0
@@ -428,11 +428,23 @@ def generate_frames():
                     if hasattr(camera, 'isOpened') and not camera.isOpened():
                         logger.error("Camera appears to be closed, attempting to reopen")
                         if not args.simulation:
-                            camera.release()
-                            camera = cv2.VideoCapture(0)
-                            camera.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-                            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-                            camera.set(cv2.CAP_PROP_FPS, 15)
+                            try:
+                                camera.release()
+                                camera = cv2.VideoCapture(0)
+                                camera.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+                                camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+                                camera.set(cv2.CAP_PROP_FPS, 15)
+                                ret_test, _ = camera.read()
+                                if ret_test:
+                                    logger.info("Camera successfully reopened")
+                                else:
+                                    logger.error("Failed to reopen camera")
+                                    camera_available = False
+                                    break
+                            except Exception as cam_error:
+                                logger.error(f"Error reopening camera: {cam_error}")
+                                camera_available = False
+                                break
                     error_count = 0
                 time.sleep(0.1)
                 continue
@@ -483,7 +495,10 @@ def generate_frames():
 def handle_connect():
     global mpu_running, mpu_thread, is_streaming, streaming_thread
     
-    logger.info(f"Client connected: {request.sid}")
+    client_id = request.sid
+    logger.info(f"Client connected: {client_id}")
+    
+    # 发送状态更新给新连接的客户端
     emit('status_update', {
         'robot_available': robot_available,
         'camera_available': camera_available,
@@ -501,13 +516,23 @@ def handle_connect():
         logger.info("MPU6050 data thread started for new client")
     
     # 自动启动视频流，无需客户端手动点击开始按钮
-    if camera_available and not is_streaming:
-        is_streaming = True
-        streaming_thread = threading.Thread(target=generate_frames)
-        streaming_thread.daemon = True
-        streaming_thread.start()
-        emit('stream_status', {'status': 'started'})
-        logger.info(f"Video streaming automatically started for client: {request.sid}")
+    if camera_available:
+        if not is_streaming:
+            try:
+                # 如果没有活跃的视频流，启动一个新的
+                is_streaming = True
+                streaming_thread = threading.Thread(target=generate_frames)
+                streaming_thread.daemon = True
+                streaming_thread.start()
+                emit('stream_status', {'status': 'started'})
+                logger.info(f"Video streaming automatically started for client: {client_id}")
+            except Exception as e:
+                logger.error(f"Error starting video stream: {e}")
+                emit('stream_status', {'status': 'error', 'message': str(e)})
+        else:
+            # 如果视频流已经在运行，只需向此客户端发送状态通知
+            emit('stream_status', {'status': 'started'})
+            logger.info(f"Existing video stream linked to new client: {client_id}")
 
 @socketio.on('disconnect')
 def handle_disconnect(sid=None):

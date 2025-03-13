@@ -224,15 +224,25 @@ function displayVideoFrame(frameData) {
         };
         
         img.onload = () => {
-            // Clear canvas
-            ctx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
-            
-            // Draw image
-            ctx.drawImage(img, 0, 0, videoCanvas.width, videoCanvas.height);
+            try {
+                // Clear canvas
+                ctx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
+                
+                // Draw image
+                ctx.drawImage(img, 0, 0, videoCanvas.width, videoCanvas.height);
+            } catch (drawError) {
+                console.error("Error drawing image to canvas:", drawError);
+            }
         };
         
-        // Use base64 encoded frame directly
-        img.src = 'data:image/jpeg;base64,' + frameData;
+        // Use base64 encoded frame directly with explicit MIME type
+        const src = 'data:image/jpeg;base64,' + frameData;
+        img.src = src;
+        
+        // 调试帮助
+        if (frameData.length < 100) {
+            console.warn("Received suspiciously small frame data:", frameData.length, "bytes");
+        }
     } catch (e) {
         console.error("Error displaying video frame:", e);
     }
