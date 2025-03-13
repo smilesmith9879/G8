@@ -390,18 +390,24 @@ def generate_frames():
             cv2.putText(frame, f"H: {gimbal_h_angle}°, V: {gimbal_v_angle}°", (10, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             
-            # 确保图像颜色空间正确
-            if frame.shape[2] == 1:
+            # 确保图像颜色空间正确 (Ensure correct color space)
+            if len(frame.shape) < 3:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            elif frame.shape[2] == 1:
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             
-            # 使用高质量的JPEG编码
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
-            _, buffer = cv2.imencode('.jpg', frame, encode_param)
-            frame_base64 = base64.b64encode(buffer).decode('utf-8')
-            
-            # Emit frame to clients using base64 encoding
-            socketio.emit('video_frame', {'frame': frame_base64})
-            time.sleep(1/15)  # Limit to 15 FPS
+            # 使用高质量的JPEG编码 (Use high quality JPEG encoding)
+            try:
+                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
+                _, buffer = cv2.imencode('.jpg', frame, encode_param)
+                frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                
+                # Emit frame to clients using base64 encoding
+                socketio.emit('video_frame', {'frame': frame_base64})
+                time.sleep(1/15)  # Limit to 15 FPS
+            except Exception as encode_error:
+                logger.error(f"Frame encoding error: {encode_error}")
+                time.sleep(0.1)
             
         except Exception as e:
             logger.error(f"Error in video streaming: {e}")
@@ -432,7 +438,7 @@ def handle_connect():
         logger.info("MPU6050 data thread started for new client")
 
 @socketio.on('disconnect')
-def handle_disconnect():
+def handle_disconnect(sid=None):
     global mpu_running
     
     logger.info(f"Client disconnected: {request.sid}")
@@ -440,13 +446,16 @@ def handle_disconnect():
         robot.t_stop(0)
         
     # Check if there are any remaining clients before stopping MPU thread
-    if len(request.namespace.rooms) <= 1 and mpu_running:  # Only default room left
+    # Use the Socket.IO server's active connections instead of request.namespace.rooms
+    if len(socketio.server.eio.sockets) <= 1 and mpu_running:  # Only one or no connections left
         mpu_running = False
         logger.info("Stopping MPU6050 data thread - no clients left")
 
 @socketio.on('start_stream')
 def handle_start_stream():
     global is_streaming, streaming_thread
+    
+    logger.info(f"Start stream request from client: {request.sid}")
     
     if not is_streaming and camera_available:
         is_streaming = True
@@ -456,16 +465,29 @@ def handle_start_stream():
         emit('stream_status', {'status': 'started'})
         logger.info("Video streaming started")
     else:
-        emit('stream_status', {'status': 'error', 'message': 'Camera not available or already streaming'})
+        if not camera_available:
+            logger.error("Camera not available for streaming")
+            emit('stream_status', {'status': 'error', 'message': 'Camera not available'})
+        elif is_streaming:
+            logger.info("Stream already active, sending status update")
+            emit('stream_status', {'status': 'started'})
+        else:
+            logger.error("Unknown error starting stream")
+            emit('stream_status', {'status': 'error', 'message': 'Unknown error starting stream'})
 
 @socketio.on('stop_stream')
 def handle_stop_stream():
     global is_streaming
     
+    logger.info(f"Stop stream request from client: {request.sid}")
+    
     if is_streaming:
         is_streaming = False
         emit('stream_status', {'status': 'stopped'})
         logger.info("Video streaming stopped")
+    else:
+        logger.info("No active stream to stop")
+        emit('stream_status', {'status': 'stopped'})
 
 @socketio.on('start_slam')
 def handle_start_slam():

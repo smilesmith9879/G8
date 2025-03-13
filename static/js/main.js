@@ -71,8 +71,10 @@ socket.on('status_update', (data) => {
 });
 
 socket.on('video_frame', (data) => {
-    if (isStreaming) {
+    if (data && data.frame) {
         displayVideoFrame(data.frame);
+    } else {
+        console.error('Received invalid video frame data');
     }
 });
 
@@ -84,16 +86,11 @@ socket.on('stream_status', (data) => {
         startStreamBtn.disabled = true;
         stopStreamBtn.disabled = false;
     } else if (data.status === 'stopped') {
-        isStreaming = false;
-        videoPlaceholder.style.display = 'flex';
-        videoCanvas.style.display = 'none';
-        startStreamBtn.disabled = false;
-        stopStreamBtn.disabled = true;
+        stopStream();
     } else if (data.status === 'error') {
+        console.error(`Stream error: ${data.message}`);
         alert(`Stream error: ${data.message}`);
-        isStreaming = false;
-        startStreamBtn.disabled = false;
-        stopStreamBtn.disabled = true;
+        stopStream();
     }
 });
 
@@ -199,32 +196,37 @@ function updateStatusIndicators(data) {
 
 // Function to display video frame
 function displayVideoFrame(frameData) {
-    const img = new Image();
+    if (!frameData) {
+        console.error("Empty frame data received");
+        return;
+    }
     
-    // 图像加载错误处理
-    img.onerror = () => {
-        console.error("Failed to load image from base64 data");
-    };
+    // 确保canvas已初始化
+    if (!videoCanvas.width || !videoCanvas.height) {
+        videoCanvas.width = 320;
+        videoCanvas.height = 240;
+    }
     
-    img.onload = () => {
-        // 确保canvas已初始化
-        if (!videoCanvas.width || !videoCanvas.height) {
-            videoCanvas.width = 320;
-            videoCanvas.height = 240;
-        }
-        
-        // Clear canvas
-        ctx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
-        
-        // Draw image
-        ctx.drawImage(img, 0, 0, videoCanvas.width, videoCanvas.height);
-    };
-    
-    // Use base64 encoded frame directly
     try {
+        const img = new Image();
+        
+        // 图像加载错误处理
+        img.onerror = () => {
+            console.error("Failed to load image from base64 data");
+        };
+        
+        img.onload = () => {
+            // Clear canvas
+            ctx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
+            
+            // Draw image
+            ctx.drawImage(img, 0, 0, videoCanvas.width, videoCanvas.height);
+        };
+        
+        // Use base64 encoded frame directly
         img.src = 'data:image/jpeg;base64,' + frameData;
     } catch (e) {
-        console.error("Error setting image source:", e);
+        console.error("Error displaying video frame:", e);
     }
 }
 
