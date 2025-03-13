@@ -44,6 +44,7 @@ let cameraJoystickData = { x: 0, y: 0 };
 // Socket.IO event handlers
 socket.on('connect', () => {
     console.log('Connected to server');
+    isStreaming = false; // 重置标志，以便服务器可以重新启动视频流
 });
 
 socket.on('disconnect', () => {
@@ -80,12 +81,12 @@ socket.on('video_frame', (data) => {
 
 socket.on('stream_status', (data) => {
     if (data.status === 'started') {
+        console.log('Video streaming started successfully');
         isStreaming = true;
         videoPlaceholder.style.display = 'none';
         videoCanvas.style.display = 'block';
-        startStreamBtn.disabled = true;
-        stopStreamBtn.disabled = false;
     } else if (data.status === 'stopped') {
+        console.log('Video streaming stopped');
         stopStream();
     } else if (data.status === 'error') {
         console.error(`Stream error: ${data.message}`);
@@ -201,6 +202,13 @@ function displayVideoFrame(frameData) {
         return;
     }
     
+    if (!isStreaming) {
+        console.log("Frame received but streaming is false, setting to true");
+        isStreaming = true;
+        videoPlaceholder.style.display = 'none';
+        videoCanvas.style.display = 'block';
+    }
+    
     // 确保canvas已初始化
     if (!videoCanvas.width || !videoCanvas.height) {
         videoCanvas.width = 320;
@@ -211,8 +219,8 @@ function displayVideoFrame(frameData) {
         const img = new Image();
         
         // 图像加载错误处理
-        img.onerror = () => {
-            console.error("Failed to load image from base64 data");
+        img.onerror = (err) => {
+            console.error("Failed to load image from base64 data:", err);
         };
         
         img.onload = () => {
@@ -372,6 +380,12 @@ function arrayBufferToBase64(buffer) {
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
+    // 隐藏视频控制按钮，因为我们现在自动处理视频流
+    const videoControls = document.querySelector('.video-controls');
+    if (videoControls) {
+        videoControls.style.display = 'none';
+    }
+    
     // Initialize joysticks
     initJoysticks();
     

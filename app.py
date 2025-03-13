@@ -201,30 +201,69 @@ def read_mpu6050_data():
 # Simulated camera frame generator
 class SimulatedCamera:
     def __init__(self):
-        self.frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        self.frame_count = 0
+        self.base_frame = np.zeros((240, 320, 3), dtype=np.uint8)
         self.font = cv2.FONT_HERSHEY_SIMPLEX
         self.text_position = (50, 120)
         self.font_scale = 0.7
         self.font_color = (255, 255, 255)
         self.line_type = 2
-        cv2.putText(self.frame, 'Simulated Camera', 
+        
+        # 创建一个更有视觉吸引力的模拟画面
+        # 绘制一个渐变背景
+        for y in range(240):
+            blue = int(255 * (y / 240))
+            green = int(100 + 100 * (1 - y / 240))
+            for x in range(320):
+                red = int(100 + 155 * (x / 320))
+                self.base_frame[y, x] = [blue, green, red]
+                
+        # 添加一些界面元素
+        cv2.rectangle(self.base_frame, (10, 10), (310, 230), (255, 255, 255), 2)
+        cv2.putText(self.base_frame, 'Simulated Camera', 
+                    self.text_position, self.font, self.font_scale,
+                    (0, 0, 0), self.line_type + 1)  # 黑色描边
+        cv2.putText(self.base_frame, 'Simulated Camera', 
                     self.text_position, self.font, self.font_scale,
                     self.font_color, self.line_type)
-        logger.info("Simulated camera initialized")
+                    
+        cv2.putText(self.base_frame, 'AI Smart Car', 
+                    (90, 180), self.font, 0.6,
+                    (0, 0, 0), 2)  # 黑色描边
+        cv2.putText(self.base_frame, 'AI Smart Car', 
+                    (90, 180), self.font, 0.6,
+                    (255, 255, 255), 1)
+                    
+        logger.info("Simulated camera initialized with enhanced visuals")
         
     def read(self):
         # Create a copy of the base frame
-        frame = self.frame.copy()
+        self.frame_count += 1
+        frame = self.base_frame.copy()
         
-        # Add timestamp
+        # Add timestamp and frame counter
         timestamp = time.strftime("%H:%M:%S", time.localtime())
-        cv2.putText(frame, timestamp, (10, 30), self.font, 0.5, (0, 255, 0), 1)
+        cv2.putText(frame, f"Time: {timestamp}", (10, 30), self.font, 0.5, (0, 0, 0), 2)
+        cv2.putText(frame, f"Time: {timestamp}", (10, 30), self.font, 0.5, (255, 255, 255), 1)
+        
+        cv2.putText(frame, f"Frame: {self.frame_count}", (10, 50), self.font, 0.5, (0, 0, 0), 2)
+        cv2.putText(frame, f"Frame: {self.frame_count}", (10, 50), self.font, 0.5, (255, 255, 255), 1)
+        
+        # 添加一个移动的元素，使画面看起来像在移动
+        offset_x = int(30 * np.sin(self.frame_count / 10))
+        offset_y = int(20 * np.cos(self.frame_count / 10))
+        center = (160 + offset_x, 120 + offset_y)
+        cv2.circle(frame, center, 15, (0, 255, 255), -1)
+        cv2.circle(frame, center, 15, (0, 0, 0), 2)
         
         # Add some movement to simulate a real camera
-        noise = np.random.randint(0, 10, frame.shape, dtype=np.uint8)
+        noise = np.random.randint(0, 8, frame.shape, dtype=np.uint8)
         frame = cv2.add(frame, noise)
         
         return True, frame
+        
+    def isOpened(self):
+        return True
         
     def release(self):
         logger.info("Simulated camera released")
@@ -373,13 +412,33 @@ def slam_processing_thread():
 def generate_frames():
     global is_streaming, camera_available
     
+    logger.info("Video streaming thread started")
+    frame_count = 0
+    error_count = 0
+    
     while is_streaming and camera_available:
         try:
             success, frame = camera.read()
             if not success:
-                logger.error("Failed to read frame from camera")
+                error_count += 1
+                logger.error(f"Failed to read frame from camera (attempt {error_count})")
+                if error_count > 5:
+                    logger.error("Too many consecutive frame read failures, checking camera...")
+                    # 尝试重新获取一帧，用于诊断
+                    if hasattr(camera, 'isOpened') and not camera.isOpened():
+                        logger.error("Camera appears to be closed, attempting to reopen")
+                        if not args.simulation:
+                            camera.release()
+                            camera = cv2.VideoCapture(0)
+                            camera.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+                            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+                            camera.set(cv2.CAP_PROP_FPS, 15)
+                    error_count = 0
                 time.sleep(0.1)
                 continue
+            
+            error_count = 0
+            frame_count += 1
                 
             # Process frame (resize, add overlay, etc.)
             frame = cv2.resize(frame, (320, 240))
@@ -402,6 +461,10 @@ def generate_frames():
                 _, buffer = cv2.imencode('.jpg', frame, encode_param)
                 frame_base64 = base64.b64encode(buffer).decode('utf-8')
                 
+                # Log every 100 frames for diagnostics
+                if frame_count % 100 == 0:
+                    logger.info(f"Streaming: emitted {frame_count} frames so far")
+                
                 # Emit frame to clients using base64 encoding
                 socketio.emit('video_frame', {'frame': frame_base64})
                 time.sleep(1/15)  # Limit to 15 FPS
@@ -413,12 +476,12 @@ def generate_frames():
             logger.error(f"Error in video streaming: {e}")
             time.sleep(0.1)
     
-    logger.info("Video streaming stopped")
+    logger.info(f"Video streaming stopped after {frame_count} frames")
 
 # Socket.IO events
 @socketio.on('connect')
 def handle_connect():
-    global mpu_running, mpu_thread
+    global mpu_running, mpu_thread, is_streaming, streaming_thread
     
     logger.info(f"Client connected: {request.sid}")
     emit('status_update', {
@@ -436,6 +499,15 @@ def handle_connect():
         mpu_thread.daemon = True
         mpu_thread.start()
         logger.info("MPU6050 data thread started for new client")
+    
+    # 自动启动视频流，无需客户端手动点击开始按钮
+    if camera_available and not is_streaming:
+        is_streaming = True
+        streaming_thread = threading.Thread(target=generate_frames)
+        streaming_thread.daemon = True
+        streaming_thread.start()
+        emit('stream_status', {'status': 'started'})
+        logger.info(f"Video streaming automatically started for client: {request.sid}")
 
 @socketio.on('disconnect')
 def handle_disconnect(sid=None):
