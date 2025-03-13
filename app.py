@@ -545,8 +545,8 @@ def handle_car_control(data):
         x = data.get('x', 0)  # -1 (left) to 1 (right)
         y = data.get('y', 0)  # -1 (backward) to 1 (forward)
         
-        # Calculate speed (0-30 as specified in requirements)
-        speed = min(30, int(abs(max(x, y, key=abs)) * 30))
+        # Calculate speed (0-60 as specified in updated requirements)
+        speed = min(60, int(abs(max(x, y, key=abs)) * 60))
         current_speed = speed
         
         # Determine movement direction
