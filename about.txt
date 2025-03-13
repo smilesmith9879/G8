@@ -1,0 +1,42 @@
+"AI Smart Four-Wheel Drive Car" project:
+Project Overview
+The project is built on the Raspberry Pi 5 platform, integrating a high-precision camera, a four-wheel-drive chassis, visual SLAM, voice interaction, and web remote control. The solution includes real-time mapping, web display, and precise camera gimbal control using PWM signals.
+
+Core Features
+Web Control: Utilize WebSocket and Flask API for remote control, supporting virtual joysticks for car and camera gimbal operation.
+Real-time Video Transmission: Implement WebRTC with a HUANER wide-angle camera for low-latency HD video streaming.
+Four-Motor Control: Use the LOBOROBOT function library for precise car movement control.
+AI Autonomous Navigation: Integrate ORB-SLAM3 for real-time environment mapping and path planning.
+Real-time Map Construction: Process SLAM data to construct a 2D/3D map of the environment.
+Web Map Display: Use JavaScript libraries like Leaflet or Three.js to render the map on the web interface.
+Camera Gimbal Control: Implement PWM9 and PWM10 for horizontal and vertical gimbal control, respectively.
+
+Hardware Structure
+Computing Unit: Raspberry Pi 5 for controlling car movement, voice interaction, and web interface.
+Camera: USB CAMERA (320x240,JPEG,15FPS) for video and mapping data.
+Chassis: Four-Wheel Drive Chassis for versatile movement;set speed less than 30;
+Servo Gimbal: MG996R + PCA9685 for camera orientation.
+Horizontal Control: PWM9, initial angle 80°, range ±45°.
+Vertical Control: PWM10, initial angle 40°, range ±45°.
+MPU6050: IMU Sensor for positioning and navigation.To check if the hardware is available first;
+
+Software System
+Operating System: Ubuntu Server 24.04 LTS
+Core Control Program: LOBOROBOT.py for car movement control.
+Mapping and Navigation: ORB-SLAM3 for real-time mapping and navigation.
+Web Interface: Flask API with WebSocket for real-time data transmission and control.
+
+Web Control Interface Design
+Optimized UI Interaction: Dual joystick layout for mobile landscape mode.
+Left Joystick: Controls car movement (forward, backward, left, right).
+Right Joystick: Controls camera gimbal rotation (up, down, left, right).
+Real-time Map Display: Render the map using Leaflet or Three.js for interactive visualization.
+left Joystick Auto-Centering: Automatically returns to the center when released, sending a stop command.
+Right Joystick Auto-Centering: Automatically returns to the center when released, reset the angle to initial(80 and 40);
+Adaptive Turning Speed: Reduces speed to 70% when turning.
+Full-Screen Adaptation: Adjusts size for optimal display.
+Enhanced HUD Design: Overlays speed, direction, and camera angle information.
+
+
+
+

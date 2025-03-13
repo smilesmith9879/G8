@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI Smart Four-Wheel Drive Car</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>AI Smart Four-Wheel Drive Car</h1>
+            {% if simulation_mode %}
+            <div class="simulation-banner">
+                <i class="fas fa-robot"></i> Running in Simulation Mode
+            </div>
+            {% endif %}
+            <div class="status-indicators">
+                <div class="status-item">
+                    <span class="status-label">Robot:</span>
+                    <span class="status-value" id="robot-status">
+                        {% if robot_available %}
+                        <i class="fas fa-check-circle status-ok"></i> Connected
+                        {% else %}
+                        <i class="fas fa-times-circle status-error"></i> Disconnected
+                        {% endif %}
+                    </span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Camera:</span>
+                    <span class="status-value" id="camera-status">
+                        {% if camera_available %}
+                        <i class="fas fa-check-circle status-ok"></i> Connected
+                        {% else %}
+                        <i class="fas fa-times-circle status-error"></i> Disconnected
+                        {% endif %}
+                    </span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">MPU6050:</span>
+                    <span class="status-value" id="mpu-status">
+                        {% if mpu6050_available %}
+                        <i class="fas fa-check-circle status-ok"></i> Connected
+                        {% else %}
+                        <i class="fas fa-times-circle status-error"></i> Disconnected
+                        {% endif %}
+                    </span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">SLAM:</span>
+                    <span class="status-value" id="slam-status">
+                        {% if slam_available %}
+                        <i class="fas fa-check-circle status-ok"></i> Available
+                        {% else %}
+                        <i class="fas fa-times-circle status-error"></i> Unavailable
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
+        </header>
+
+        <main>
+            <div class="video-container">
+                <div class="video-feed" id="video-feed">
+                    <div class="video-placeholder">
+                        <i class="fas fa-video"></i>
+                        <p>Video feed will appear here</p>
+                    </div>
+                    <canvas id="video-canvas"></canvas>
+                </div>
+                <div class="video-controls">
+                    <button id="start-stream" class="btn btn-primary">
+                        <i class="fas fa-play"></i> Start Stream
+                    </button>
+                    <button id="stop-stream" class="btn btn-danger" disabled>
+                        <i class="fas fa-stop"></i> Stop Stream
+                    </button>
+                </div>
+            </div>
+
+            <div class="control-container">
+                <div class="joystick-container">
+                    <div class="joystick-label">Car Control</div>
+                    <div class="joystick" id="car-joystick"></div>
+                    <div class="joystick-info" id="car-joystick-info">
+                        <div>X: <span id="car-x">0</span></div>
+                        <div>Y: <span id="car-y">0</span></div>
+                        <div>Speed: <span id="car-speed">0</span></div>
+                    </div>
+                </div>
+
+                <div class="joystick-container">
+                    <div class="joystick-label">Camera Control</div>
+                    <div class="joystick" id="camera-joystick"></div>
+                    <div class="joystick-info" id="camera-joystick-info">
+                        <div>H: <span id="camera-h">80°</span></div>
+                        <div>V: <span id="camera-v">40°</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="map-container">
+                <div class="map-header">
+                    <h2>Environment Map</h2>
+                    <div class="map-controls">
+                        <button id="start-slam" class="btn btn-primary" {% if not slam_available %}disabled{% endif %}>
+                            <i class="fas fa-map-marked-alt"></i> Start SLAM
+                        </button>
+                        <button id="stop-slam" class="btn btn-danger" disabled>
+                            <i class="fas fa-stop"></i> Stop SLAM
+                        </button>
+                    </div>
+                </div>
+                <div id="map-placeholder">
+                    <i class="fas fa-map"></i>
+                    <p>Map will be displayed here when SLAM is active</p>
+                </div>
+                <div id="map-display">
+                    <img id="map-image" src="" alt="SLAM Map">
+                    <div class="position-info">
+                        <div>X: <span id="pos-x">0.00</span>m</div>
+                        <div>Y: <span id="pos-y">0.00</span>m</div>
+                        <div>Z: <span id="pos-z">0.00</span>m</div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <p>&copy; 2023 AI Smart Four-Wheel Drive Car Project</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html> 
