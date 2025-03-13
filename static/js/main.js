@@ -191,22 +191,8 @@ function displayVideoFrame(frameData) {
         ctx.drawImage(img, 0, 0, videoCanvas.width, videoCanvas.height);
     };
     
-    // Convert binary frame data to base64
-    const base64Frame = arrayBufferToBase64(frameData);
-    img.src = 'data:image/jpeg;base64,' + base64Frame;
-}
-
-// Helper function to convert ArrayBuffer to Base64
-function arrayBufferToBase64(buffer) {
-    let binary = '';
-    const bytes = new Uint8Array(buffer);
-    const len = bytes.byteLength;
-    
-    for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(bytes[i]);
-    }
-    
-    return window.btoa(binary);
+    // Use base64 encoded frame directly
+    img.src = 'data:image/jpeg;base64,' + frameData;
 }
 
 // Initialize joysticks
@@ -225,8 +211,8 @@ function initJoysticks() {
     carJoystick = nipplejs.create(carJoystickOptions);
     
     carJoystick.on('move', (evt, data) => {
-        const x = parseFloat((data.vector.x).toFixed(2));
-        const y = parseFloat((-data.vector.y).toFixed(2)); // Invert Y axis
+        const x = parseFloat((-data.vector.x).toFixed(2));
+        const y = parseFloat((data.vector.y).toFixed(2));
         
         carJoystickData = { x, y };
         
@@ -261,8 +247,8 @@ function initJoysticks() {
     cameraJoystick = nipplejs.create(cameraJoystickOptions);
     
     cameraJoystick.on('move', (evt, data) => {
-        const x = parseFloat((data.vector.x).toFixed(2));
-        const y = parseFloat((-data.vector.y).toFixed(2)); // Invert Y axis
+        const x = parseFloat((-data.vector.x).toFixed(2));
+        const y = parseFloat((data.vector.y).toFixed(2));
         
         cameraJoystickData = { x, y };
     });
@@ -334,6 +320,20 @@ startStreamBtn.addEventListener('click', startStream);
 stopStreamBtn.addEventListener('click', stopStream);
 startSlamBtn.addEventListener('click', startSlam);
 stopSlamBtn.addEventListener('click', stopSlam);
+
+// Helper function to convert ArrayBuffer to Base64 (不需要此函数，直接使用base64)
+// 保留此函数以兼容可能的历史代码，但实际上不再使用它
+function arrayBufferToBase64(buffer) {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const len = bytes.byteLength;
+    
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    
+    return window.btoa(binary);
+}
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {

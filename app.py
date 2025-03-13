@@ -181,11 +181,34 @@ gimbal_v_angle = 40  # Initial vertical angle (PWM10)
 mpu6050_available = False
 if not args.simulation:
     try:
-        # This is a placeholder for MPU6050 initialization
-        # In a real implementation, you would import and initialize the MPU6050 library
-        logger.info("MPU6050 check completed")
+        # 尝试实际初始化MPU6050
+        # 这里只是一个示例，实际代码取决于您的MPU6050库
+        import smbus2 as smbus
+        bus = smbus.SMBus(1)
+        # MPU6050的I2C地址通常是0x68或0x69
+        mpu_addr = 0x68
+        # 尝试读取WHO_AM_I寄存器 (寄存器地址通常是0x75)
+        # 如果能读到数据，说明MPU6050连接正常
+        try:
+            bus.write_byte_data(mpu_addr, 0x6B, 0)  # 唤醒MPU6050
+            whoami = bus.read_byte_data(mpu_addr, 0x75)
+            if whoami:
+                mpu6050_available = True
+                logger.info(f"MPU6050 initialized successfully, WHO_AM_I: {whoami}")
+        except Exception as inner_e:
+            logger.info(f"MPU6050 not responding on address 0x68: {inner_e}")
+            # 尝试备用地址0x69
+            try:
+                mpu_addr = 0x69
+                bus.write_byte_data(mpu_addr, 0x6B, 0)  # 唤醒MPU6050
+                whoami = bus.read_byte_data(mpu_addr, 0x75)
+                if whoami:
+                    mpu6050_available = True
+                    logger.info(f"MPU6050 initialized successfully on alternate address, WHO_AM_I: {whoami}")
+            except Exception as alt_e:
+                logger.info(f"MPU6050 not responding on alternate address 0x69: {alt_e}")
     except Exception as e:
-        logger.error(f"MPU6050 not available: {e}")
+        logger.error(f"MPU6050 initialization failed: {e}")
 else:
     logger.info("Running in simulation mode - MPU6050 not initialized")
 
@@ -266,7 +289,8 @@ def generate_frames():
             success, frame = camera.read()
             if not success:
                 logger.error("Failed to read frame from camera")
-                break
+                time.sleep(0.1)
+                continue
                 
             # Process frame (resize, add overlay, etc.)
             frame = cv2.resize(frame, (320, 240))
@@ -278,16 +302,16 @@ def generate_frames():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             
             # Convert to JPEG
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame_bytes = buffer.tobytes()
+            _, buffer = cv2.imencode('.jpg', frame)
+            frame_base64 = base64.b64encode(buffer).decode('utf-8')
             
-            # Emit frame to clients
-            socketio.emit('video_frame', {'frame': frame_bytes})
+            # Emit frame to clients using base64 encoding
+            socketio.emit('video_frame', {'frame': frame_base64})
             time.sleep(1/15)  # Limit to 15 FPS
             
         except Exception as e:
             logger.error(f"Error in video streaming: {e}")
-            break
+            time.sleep(0.1)
     
     logger.info("Video streaming stopped")
 
@@ -394,10 +418,10 @@ def handle_car_control(data):
         
         # Determine movement direction
         if abs(y) > abs(x):  # Forward/backward movement dominates
-            if y > 0.1:  # Forward
+            if y > 0.1:  # Forward (修正：当y值大于0.1时为前进)
                 robot.t_up(speed, 0.1)
                 logger.info(f"Moving forward at speed {speed}")
-            elif y < -0.1:  # Backward
+            elif y < -0.1:  # Backward (修正：当y值小于-0.1时为后退)
                 robot.t_down(speed, 0.1)
                 logger.info(f"Moving backward at speed {speed}")
             else:  # Stop
@@ -406,10 +430,10 @@ def handle_car_control(data):
         elif abs(x) > abs(y):  # Left/right movement dominates
             # Reduce speed to 70% when turning as per requirements
             turn_speed = int(speed * 0.7)
-            if x > 0.1:  # Right
+            if x > 0.1:  # Right (修正：当x值大于0.1时为右转)
                 robot.turnRight(turn_speed, 0.1)
                 logger.info(f"Turning right at speed {turn_speed}")
-            elif x < -0.1:  # Left
+            elif x < -0.1:  # Left (修正：当x值小于-0.1时为左转)
                 robot.turnLeft(turn_speed, 0.1)
                 logger.info(f"Turning left at speed {turn_speed}")
             else:  # Stop
@@ -447,10 +471,12 @@ def handle_gimbal_control(data):
         else:
             # Update angles based on joystick position
             # Map joystick x (-1 to 1) to angle change (-45 to 45)
+            # x值已经在前端取反，这里直接使用
             h_change = int(x * 45)
             gimbal_h_angle = max(35, min(125, 80 + h_change))
             
-            # Map joystick y (-1 to 1) to angle change (-40 to 45)
+            # Map joystick y (-1 to 1) to angle change (-45 to 45)
+            # y值已经在前端取反，这里直接使用
             v_change = int(y * 45)
             gimbal_v_angle = max(0, min(85, 40 + v_change))
         
@@ -486,7 +512,7 @@ if __name__ == '__main__':
         
         # Start the Flask app with SocketIO
         logger.info("Starting server on 0.0.0.0:5000")
-        socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+        socketio.run(app, host='0.0.0.0', port=5000, debug=False)
     except KeyboardInterrupt:
         logger.info("Server shutdown requested")
     finally:
