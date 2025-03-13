@@ -44,15 +44,16 @@ let cameraJoystickData = { x: 0, y: 0 };
 // Socket.IO event handlers
 socket.on('connect', () => {
     console.log('Connected to server');
-    isStreaming = false; // 重置标志，以便服务器可以重新启动视频流
+    console.log('Waiting for server to start video stream...');
 });
 
 socket.on('disconnect', () => {
     console.log('Disconnected from server');
-    stopStream();
+    isStreaming = false;
     if (isSlamActive) {
-        stopSlam();
+        isSlamActive = false;
     }
+    console.log('Connection lost - stream states reset');
 });
 
 socket.on('status_update', (data) => {
@@ -80,18 +81,24 @@ socket.on('video_frame', (data) => {
 });
 
 socket.on('stream_status', (data) => {
+    console.log('Received stream_status:', data.status);
+    
     if (data.status === 'started') {
         console.log('Video streaming started successfully');
         isStreaming = true;
         videoPlaceholder.style.display = 'none';
         videoCanvas.style.display = 'block';
     } else if (data.status === 'stopped') {
-        console.log('Video streaming stopped');
-        stopStream();
+        console.log('Video streaming stopped by server');
+        isStreaming = false;
+        videoPlaceholder.style.display = 'flex';
+        videoCanvas.style.display = 'none';
     } else if (data.status === 'error') {
         console.error(`Stream error: ${data.message}`);
         alert(`Stream error: ${data.message}`);
-        stopStream();
+        isStreaming = false;
+        videoPlaceholder.style.display = 'flex';
+        videoCanvas.style.display = 'none';
     }
 });
 
@@ -202,17 +209,23 @@ function displayVideoFrame(frameData) {
         return;
     }
     
+    // 更新显示状态，但不触发任何事件
     if (!isStreaming) {
-        console.log("Frame received but streaming is false, setting to true");
+        console.log("First frame received, updating UI");
         isStreaming = true;
-        videoPlaceholder.style.display = 'none';
-        videoCanvas.style.display = 'block';
+        if (videoPlaceholder && videoPlaceholder.style) {
+            videoPlaceholder.style.display = 'none';
+        }
+        if (videoCanvas && videoCanvas.style) {
+            videoCanvas.style.display = 'block';
+        }
     }
     
     // 确保canvas已初始化
     if (!videoCanvas.width || !videoCanvas.height) {
         videoCanvas.width = 320;
         videoCanvas.height = 240;
+        console.log("Canvas initialized to 320x240");
     }
     
     try {
@@ -230,6 +243,15 @@ function displayVideoFrame(frameData) {
                 
                 // Draw image
                 ctx.drawImage(img, 0, 0, videoCanvas.width, videoCanvas.height);
+                
+                // 每100帧记录一次，避免控制台过多日志
+                if (window.frameCounter === undefined) {
+                    window.frameCounter = 0;
+                }
+                window.frameCounter++;
+                if (window.frameCounter % 100 === 0) {
+                    console.log(`Displayed ${window.frameCounter} frames`);
+                }
             } catch (drawError) {
                 console.error("Error drawing image to canvas:", drawError);
             }
@@ -239,7 +261,7 @@ function displayVideoFrame(frameData) {
         const src = 'data:image/jpeg;base64,' + frameData;
         img.src = src;
         
-        // 调试帮助
+        // 调试帮助 - 只在帧数据异常小时警告
         if (frameData.length < 100) {
             console.warn("Received suspiciously small frame data:", frameData.length, "bytes");
         }
@@ -343,14 +365,11 @@ function startStream() {
     socket.emit('start_stream');
 }
 
-// Stop video stream
+// Stop video stream - 只在用户主动点击停止按钮时调用
 function stopStream() {
+    console.log('User requested to stop stream');
     socket.emit('stop_stream');
-    isStreaming = false;
-    videoPlaceholder.style.display = 'flex';
-    videoCanvas.style.display = 'none';
-    startStreamBtn.disabled = false;
-    stopStreamBtn.disabled = true;
+    // 状态更新会在接收到服务器的回复后处理
 }
 
 // Start SLAM
@@ -390,10 +409,26 @@ function arrayBufferToBase64(buffer) {
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
-    // 隐藏视频控制按钮，因为我们现在自动处理视频流
+    console.log('Page loaded, initializing interface');
+    
+    // 完全隐藏视频控制按钮，因为我们现在自动处理视频流
     const videoControls = document.querySelector('.video-controls');
     if (videoControls) {
         videoControls.style.display = 'none';
+    }
+    
+    // 移除不必要的事件监听器，防止意外触发
+    if (stopStreamBtn) {
+        stopStreamBtn.removeEventListener('click', stopStream);
+    }
+    
+    // 如果视频控制按钮仍然可见，更新它们的状态
+    if (startStreamBtn) {
+        startStreamBtn.disabled = true;
+        startStreamBtn.textContent = 'Stream Auto-Started';
+    }
+    if (stopStreamBtn) {
+        stopStreamBtn.disabled = true;
     }
     
     // Initialize joysticks
@@ -406,6 +441,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fetch('/status')
         .then(response => response.json())
         .then(data => {
+            console.log('Received status from server:', data);
             updateStatusIndicators(data);
             
             // Update SLAM button state
@@ -427,9 +463,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Handle page visibility changes
 document.addEventListener('visibilitychange', () => {
+    console.log('Page visibility changed:', document.hidden ? 'hidden' : 'visible');
+    
     if (document.hidden) {
-        // Page is hidden, stop controls
-        socket.emit('car_control', { x: 0, y: 0 });
+        // Page is hidden, stop controls but don't stop video
+        if (carJoystickData.x !== 0 || carJoystickData.y !== 0) {
+            socket.emit('car_control', { x: 0, y: 0 });
+            console.log('Car stopped due to page hidden');
+        }
         stopControlIntervals();
     } else {
         // Page is visible again, restart control intervals
@@ -437,8 +478,10 @@ document.addEventListener('visibilitychange', () => {
     }
 });
 
-// Handle page unload
+// Handle page unload - only stop the car, don't stop the stream
 window.addEventListener('beforeunload', () => {
     // Stop the car when leaving the page
     socket.emit('car_control', { x: 0, y: 0 });
+    console.log('Car stopped due to page unload');
+    // No need to stop the stream here, the socket disconnect event will handle cleanup
 }); 

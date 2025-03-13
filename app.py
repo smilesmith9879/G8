@@ -536,17 +536,29 @@ def handle_connect():
 
 @socketio.on('disconnect')
 def handle_disconnect(sid=None):
-    global mpu_running
+    global mpu_running, is_streaming
     
-    logger.info(f"Client disconnected: {request.sid}")
+    client_id = request.sid
+    logger.info(f"Client disconnected: {client_id}")
+    
+    # 停止机器人运动
     if robot_available:
         robot.t_stop(0)
-        
-    # Check if there are any remaining clients before stopping MPU thread
-    # Use the Socket.IO server's active connections instead of request.namespace.rooms
-    if len(socketio.server.eio.sockets) <= 1 and mpu_running:  # Only one or no connections left
+        logger.info(f"Robot stopped due to client disconnect: {client_id}")
+    
+    # 获取实际的活跃连接数量
+    active_clients = len(socketio.server.eio.sockets)
+    logger.info(f"Remaining active clients: {active_clients}")
+    
+    # 检查是否需要停止MPU6050线程
+    if active_clients <= 1 and mpu_running:  # 仅剩服务器自身或无连接
         mpu_running = False
         logger.info("Stopping MPU6050 data thread - no clients left")
+    
+    # 如果没有客户端了，同时停止视频流
+    if active_clients <= 1 and is_streaming:
+        logger.info("Stopping video stream - no clients left")
+        is_streaming = False
 
 @socketio.on('start_stream')
 def handle_start_stream():
