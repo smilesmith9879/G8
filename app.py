@@ -348,6 +348,8 @@ gimbal_h_angle = 80  # Initial horizontal angle (PWM9)
 gimbal_v_angle = 40  # Initial vertical angle (PWM10)
 camera_lock = threading.RLock()  # 添加相机资源锁，防止多线程同时访问
 last_resource_check = time.time()  # 资源检查时间记录
+resource_monitor_thread = None  # 资源监控线程
+resource_monitoring_active = False  # 资源监控活动状态
 
 # Check if MPU6050 is available
 mpu6050_available = False
@@ -410,18 +412,28 @@ def status():
 
 # SLAM processing thread
 def slam_processing_thread():
-    global slam_active
-    global camera_lock
+    global slam_active, camera_lock
     
     logger.info("SLAM processing thread started")
     frame_count = 0
     error_count = 0
     last_success_time = time.time()
+    last_detailed_log = time.time()  # 上次详细日志时间
+    processing_times = []  # 存储处理时间
     
     while slam_active and camera_available and slam_initialized:
+        frame_start = time.time()
+        frame_processed = False
+        
         try:
             # 获取相机锁
-            acquired = camera_lock.acquire(timeout=0.1)  # 设置超时以避免长时间等待
+            lock_start = time.time()
+            acquired = camera_lock.acquire(timeout=0.1)
+            lock_time = time.time() - lock_start
+            
+            if lock_time > 0.05:  # 如果获取锁的时间过长，记录日志
+                logger.warning(f"SLAM: Camera lock acquisition took {lock_time:.3f}s")
+                
             if not acquired:
                 logger.warning("SLAM: Failed to acquire camera lock, skipping frame")
                 time.sleep(0.05)  # 短暂等待
@@ -429,9 +441,9 @@ def slam_processing_thread():
                 
             try:
                 # 获取相机帧
-                start_time = time.time()
+                read_start = time.time()
                 success, frame = camera.read()
-                read_time = time.time() - start_time
+                read_time = time.time() - read_start
                 
                 if read_time > 0.1:
                     logger.warning(f"SLAM: Camera read took {read_time:.3f}s, which is slow")
@@ -462,6 +474,7 @@ def slam_processing_thread():
                 error_count = 0
                 last_success_time = time.time()
                 frame_count += 1
+                frame_processed = True
                 
                 # 检查帧质量
                 if frame is None or frame.size == 0:
@@ -473,6 +486,7 @@ def slam_processing_thread():
                     logger.debug(f"SLAM processing frame #{frame_count}, shape: {frame.shape}, type: {frame.dtype}")
                 
                 # 确保帧格式正确 - SLAM通常需要灰度或RGB
+                preprocess_start = time.time()
                 gray_frame = None
                 if len(frame.shape) == 3 and frame.shape[2] == 3:
                     # 彩色帧，转换为灰度用于某些SLAM算法
@@ -480,6 +494,7 @@ def slam_processing_thread():
                 elif len(frame.shape) == 2:
                     # 已经是灰度
                     gray_frame = frame
+                preprocess_time = time.time() - preprocess_start
                 
                 # 处理帧用于SLAM
                 process_start = time.time()
@@ -489,32 +504,62 @@ def slam_processing_thread():
                 if process_time > 0.2:  # 如果处理时间超过200ms，记录警告
                     logger.warning(f"SLAM: Frame processing took {process_time:.3f}s, which may be too slow")
                 
+                # 收集处理时间统计
+                processing_times.append(process_time)
+                
                 # 每10帧记录一次性能信息
                 if frame_count % 10 == 0:
                     logger.info(f"SLAM processed {frame_count} frames, last frame process time: {process_time:.3f}s")
                 
                 # 获取2D地图
+                map_start = time.time()
                 map_2d = slam.get_2d_map()
+                map_time = time.time() - map_start
                 
                 # 转换为base64
+                encode_start = time.time()
                 _, buffer = cv2.imencode('.png', map_2d)
                 map_base64 = base64.b64encode(buffer).decode('utf-8')
+                encode_time = time.time() - encode_start
                 
                 # 发送地图给客户端
+                emit_start = time.time()
                 socketio.emit('slam_map', {'map': map_base64})
+                emit_time = time.time() - emit_start
                 
                 # 获取当前位姿
+                pose_start = time.time()
                 pose = slam.get_current_pose()
                 position = pose[0:3, 3].tolist()
+                pose_time = time.time() - pose_start
                 
                 # 发送位置给客户端
                 socketio.emit('slam_position', {'position': position})
                 
+                # 每30秒输出一次详细的性能报告
+                current_time = time.time()
+                if current_time - last_detailed_log >= 30.0 and len(processing_times) > 0:
+                    avg_process_time = sum(processing_times) / len(processing_times)
+                    max_process_time = max(processing_times)
+                    min_process_time = min(processing_times)
+                    
+                    logger.info(f"SLAM performance report - Average process time: {avg_process_time*1000:.1f}ms, Min: {min_process_time*1000:.1f}ms, Max: {max_process_time*1000:.1f}ms")
+                    logger.info(f"Last frame times - Read: {read_time*1000:.1f}ms, Process: {process_time*1000:.1f}ms, Map: {map_time*1000:.1f}ms, Encode: {encode_time*1000:.1f}ms, Emit: {emit_time*1000:.1f}ms, Pose: {pose_time*1000:.1f}ms")
+                    
+                    # 重置统计数据
+                    processing_times = []
+                    last_detailed_log = current_time
+                
                 # 监控系统资源
                 monitor_resources()
                 
-                # 限制更新频率
-                time.sleep(0.2)
+                # 计算总处理时间
+                total_time = time.time() - frame_start
+                
+                # 限制更新频率 - 目标是5Hz (200ms/帧)
+                sleep_time = max(0, 0.2 - total_time)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
                 
             finally:
                 # 确保在任何情况下都释放锁
@@ -523,6 +568,10 @@ def slam_processing_thread():
         except Exception as e:
             logger.error(f"Error in SLAM processing: {e}")
             time.sleep(0.5)
+        
+        # 如果帧没有处理成功，添加简短延迟
+        if not frame_processed:
+            time.sleep(0.1)
     
     logger.info(f"SLAM processing thread stopped after processing {frame_count} frames")
 
@@ -565,6 +614,8 @@ def generate_frames():
     error_count = 0
     last_log_time = time.time()
     fps_stats = []  # 存储每秒处理的帧数统计
+    last_detailed_log = time.time()  # 上次详细日志时间
+    frame_processing_times = []  # 存储帧处理时间统计
     
     # 视频帧率和质量设置
     TARGET_FPS = 10  # 降低目标帧率以减轻服务器负担
@@ -572,19 +623,36 @@ def generate_frames():
     FRAME_HEIGHT = 240
     JPEG_QUALITY = 70  # 降低JPEG质量以减小数据大小
     
+    # 记录视频流初始化参数
+    logger.info(f"Video stream parameters - Target FPS: {TARGET_FPS}, Resolution: {FRAME_WIDTH}x{FRAME_HEIGHT}, JPEG Quality: {JPEG_QUALITY}")
+    
     while is_streaming and camera_available:
         loop_start = time.time()  # 测量每帧处理时间
+        frame_processed = False
         
         try:
             # 获取相机锁
+            lock_start = time.time()
             acquired = camera_lock.acquire(timeout=0.1)
+            lock_time = time.time() - lock_start
+            
+            if lock_time > 0.05:  # 如果获取锁的时间过长，记录日志
+                logger.warning(f"Video stream: Camera lock acquisition took {lock_time:.3f}s")
+                
             if not acquired:
                 logger.warning("Video stream: Failed to acquire camera lock, skipping frame")
                 time.sleep(0.01)  # 短暂等待
                 continue
                 
             try:
+                # 读取相机帧，测量时间
+                read_start = time.time()
                 success, frame = camera.read()
+                read_time = time.time() - read_start
+                
+                if read_time > 0.1:  # 如果读取时间过长，记录日志
+                    logger.warning(f"Video stream: Camera read took {read_time:.3f}s, which is slow")
+                
                 if not success:
                     error_count += 1
                     logger.error(f"Failed to read frame from camera (attempt {error_count})")
@@ -631,14 +699,18 @@ def generate_frames():
                     time.sleep(0.1)
                     continue
                 
+                # 成功读取帧
+                frame_processed = True
                 error_count = 0
                 frame_count += 1
                     
                 # 处理前记录原始帧大小
                 original_shape = frame.shape
+                resize_start = time.time()
                 
                 # 降低处理分辨率以提高性能
                 frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
+                resize_time = time.time() - resize_start
                 
                 # 简化HUD叠加，减少处理开销
                 if frame_count % 5 == 0:  # 只在每5帧更新一次HUD信息
@@ -661,6 +733,9 @@ def generate_frames():
                     frame_base64 = base64.b64encode(buffer).decode('utf-8')
                     encode_time = time.time() - encode_start
                     
+                    if encode_time > 0.1:  # 如果编码时间过长，记录日志
+                        logger.warning(f"Video stream: Frame encoding took {encode_time:.3f}s, which is slow")
+                    
                     # 为帧添加序号和时间戳，便于调试
                     frame_data = {
                         'frame': frame_base64,
@@ -673,6 +748,24 @@ def generate_frames():
                     if frame_count % 10 == 0:
                         logger.debug(f"Frame #{frame_count}: size={len(frame_base64)/1024:.1f}KB, encode_time={encode_time*1000:.1f}ms")
                     
+                    # 发送帧，测量发送时间
+                    emit_start = time.time()
+                    # 逐个发送帧到各个客户端，而不是广播给所有客户端
+                    clients = socketio.server.get_namespace('/')._get_clients()
+                    client_count = len(clients)
+                    
+                    for client_sid in clients:
+                        socketio.emit('video_frame', frame_data, room=client_sid)
+                        
+                    emit_time = time.time() - emit_start
+                    
+                    if emit_time > 0.2:  # 如果发送时间过长，记录日志
+                        logger.warning(f"Video stream: Frame emission to {client_count} clients took {emit_time:.3f}s, which is slow")
+                    
+                    # 每处理100帧，记录一次总体信息
+                    if frame_count % 100 == 0:
+                        logger.info(f"Streaming: emitted {frame_count} frames so far")
+                    
                     # 每秒记录一次性能统计
                     current_time = time.time()
                     if current_time - last_log_time >= 1.0:
@@ -683,20 +776,30 @@ def generate_frames():
                     else:
                         fps_stats.append(1)
                     
-                    # 逐个发送帧到各个客户端，而不是广播给所有客户端
-                    clients = socketio.server.get_namespace('/')._get_clients()
-                    for client_sid in clients:
-                        socketio.emit('video_frame', frame_data, room=client_sid)
+                    # 记录总处理时间
+                    total_process_time = time.time() - loop_start
+                    frame_processing_times.append(total_process_time)
                     
-                    # 每处理100帧，记录一次总体信息
-                    if frame_count % 100 == 0:
-                        logger.info(f"Streaming: emitted {frame_count} frames so far")
+                    # 每30秒输出一次详细的性能报告
+                    if current_time - last_detailed_log >= 30.0 and len(frame_processing_times) > 0:
+                        avg_process_time = sum(frame_processing_times) / len(frame_processing_times)
+                        max_process_time = max(frame_processing_times)
+                        min_process_time = min(frame_processing_times)
+                        
+                        logger.info(f"Video stream performance report - Average process time: {avg_process_time*1000:.1f}ms, Min: {min_process_time*1000:.1f}ms, Max: {max_process_time*1000:.1f}ms")
+                        logger.info(f"Current client count: {client_count}, Frame count: {frame_count}")
+                        
+                        # 重置统计数据
+                        frame_processing_times = []
+                        last_detailed_log = current_time
                     
                     # 帧率控制
                     process_time = time.time() - loop_start
                     sleep_time = max(0, 1.0/TARGET_FPS - process_time)
                     if sleep_time > 0:
                         time.sleep(sleep_time)
+                    elif process_time > 1.5/TARGET_FPS:  # 如果处理时间超过目标帧率的1.5倍，记录警告
+                        logger.warning(f"Video stream: Frame processing time {process_time:.3f}s exceeds target frame time {1.0/TARGET_FPS:.3f}s")
                         
                 except Exception as encode_error:
                     logger.error(f"Frame encoding error: {encode_error}")
@@ -712,13 +815,99 @@ def generate_frames():
         except Exception as e:
             logger.error(f"Error in video streaming: {e}")
             time.sleep(0.1)
+        
+        # 如果帧没有处理成功，添加简短延迟
+        if not frame_processed:
+            time.sleep(0.05)
     
     logger.info(f"Video streaming stopped after {frame_count} frames")
+
+# 添加资源监控线程函数
+def resource_monitoring_thread():
+    global resource_monitoring_active
+    
+    logger.info("Resource monitoring thread started")
+    
+    while resource_monitoring_active and psutil_available:
+        try:
+            # 获取系统资源使用情况
+            cpu_percent = psutil.cpu_percent(interval=1)
+            memory = psutil.virtual_memory()
+            memory_percent = memory.percent
+            memory_used_mb = memory.used / (1024 * 1024)
+            memory_total_mb = memory.total / (1024 * 1024)
+            
+            # 获取硬盘使用情况
+            try:
+                disk = psutil.disk_usage('/')
+                disk_percent = disk.percent
+                disk_used_gb = disk.used / (1024 * 1024 * 1024)
+                disk_total_gb = disk.total / (1024 * 1024 * 1024)
+            except:
+                disk_percent = 0
+                disk_used_gb = 0
+                disk_total_gb = 0
+            
+            # 获取网络IO统计
+            try:
+                net_io = psutil.net_io_counters()
+                net_sent_mb = net_io.bytes_sent / (1024 * 1024)
+                net_recv_mb = net_io.bytes_recv / (1024 * 1024)
+            except:
+                net_sent_mb = 0
+                net_recv_mb = 0
+            
+            # 获取进程信息
+            process = psutil.Process(os.getpid())
+            process_cpu = process.cpu_percent(interval=0.5)
+            process_memory = process.memory_info().rss / (1024 * 1024)  # 转换为MB
+            
+            # 创建资源数据字典
+            resource_data = {
+                'cpu': {
+                    'percent': round(cpu_percent, 1),
+                    'process_percent': round(process_cpu, 1)
+                },
+                'memory': {
+                    'percent': round(memory_percent, 1),
+                    'used_mb': round(memory_used_mb, 1),
+                    'total_mb': round(memory_total_mb, 1),
+                    'process_mb': round(process_memory, 1)
+                },
+                'disk': {
+                    'percent': round(disk_percent, 1),
+                    'used_gb': round(disk_used_gb, 1),
+                    'total_gb': round(disk_total_gb, 1)
+                },
+                'network': {
+                    'sent_mb': round(net_sent_mb, 1),
+                    'recv_mb': round(net_recv_mb, 1)
+                },
+                'timestamp': time.time()
+            }
+            
+            # 发送到客户端
+            socketio.emit('resource_update', resource_data)
+            
+            # 记录到日志（仅在资源使用较高时记录，避免日志过多）
+            if cpu_percent > 70 or memory_percent > 70:
+                logger.warning(f"High resource usage - CPU: {cpu_percent}%, Memory: {memory_percent}%, Process CPU: {process_cpu}%, Process Memory: {process_memory:.1f}MB")
+            else:
+                logger.debug(f"Resource usage - CPU: {cpu_percent}%, Memory: {memory_percent}%, Process CPU: {process_cpu}%, Process Memory: {process_memory:.1f}MB")
+                
+            # 间隔3秒发送一次
+            time.sleep(3)
+            
+        except Exception as e:
+            logger.error(f"Error in resource monitoring: {e}")
+            time.sleep(5)  # 出错时延长等待时间
+    
+    logger.info("Resource monitoring thread stopped")
 
 # Socket.IO events
 @socketio.on('connect')
 def handle_connect():
-    global mpu_running, mpu_thread, is_streaming, streaming_thread
+    global mpu_running, mpu_thread, is_streaming, streaming_thread, resource_monitoring_active, resource_monitor_thread
     
     client_id = request.sid
     logger.info(f"Client connected: {client_id}")
@@ -739,6 +928,14 @@ def handle_connect():
         mpu_thread.daemon = True
         mpu_thread.start()
         logger.info("MPU6050 data thread started for new client")
+    
+    # 启动资源监控线程（如果尚未运行且psutil可用）
+    if psutil_available and not resource_monitoring_active:
+        resource_monitoring_active = True
+        resource_monitor_thread = threading.Thread(target=resource_monitoring_thread)
+        resource_monitor_thread.daemon = True
+        resource_monitor_thread.start()
+        logger.info("Resource monitoring thread started")
     
     # 自动启动视频流，无需客户端手动点击开始按钮
     if camera_available:
@@ -761,7 +958,7 @@ def handle_connect():
 
 @socketio.on('disconnect')
 def handle_disconnect(sid=None):
-    global mpu_running, is_streaming
+    global mpu_running, is_streaming, resource_monitoring_active
     
     client_id = request.sid
     logger.info(f"Client disconnected: {client_id}")
@@ -779,6 +976,11 @@ def handle_disconnect(sid=None):
     if active_clients <= 1 and mpu_running:  # 仅剩服务器自身或无连接
         mpu_running = False
         logger.info("Stopping MPU6050 data thread - no clients left")
+    
+    # 检查是否需要停止资源监控
+    if active_clients <= 1 and resource_monitoring_active:
+        resource_monitoring_active = False
+        logger.info("Stopping resource monitoring - no clients left")
     
     # 如果没有客户端了，同时停止视频流
     if active_clients <= 1 and is_streaming:
@@ -832,17 +1034,18 @@ def handle_start_slam():
     if not slam_active and slam_initialized and camera_available:
         try:
             # 检查系统资源是否充足
-            try:
-                cpu_percent = psutil.cpu_percent()
-                memory = psutil.virtual_memory()
-                memory_percent = memory.percent
-                
-                if cpu_percent > 80:
-                    logger.warning(f"Starting SLAM with high CPU usage: {cpu_percent}%")
-                if memory_percent > 80:
-                    logger.warning(f"Starting SLAM with high memory usage: {memory_percent}%")
-            except:
-                logger.info("Unable to check system resources before starting SLAM")
+            if psutil_available:
+                try:
+                    cpu_percent = psutil.cpu_percent()
+                    memory = psutil.virtual_memory()
+                    memory_percent = memory.percent
+                    
+                    if cpu_percent > 80:
+                        logger.warning(f"Starting SLAM with high CPU usage: {cpu_percent}%")
+                    if memory_percent > 80:
+                        logger.warning(f"Starting SLAM with high memory usage: {memory_percent}%")
+                except Exception as e:
+                    logger.info(f"Unable to check system resources before starting SLAM: {e}")
             
             # 尝试启动SLAM
             logger.info("Preparing to start SLAM...")
@@ -1003,20 +1206,20 @@ if robot_available:
     except Exception as e:
         logger.error(f"Failed to initialize gimbal: {e}")
 
+@socketio.on('ping_request')
+def handle_ping_request():
+    # 立即响应ping请求，用于测量延迟
+    emit('ping_response')
+
 if __name__ == '__main__':
     try:
         # 检查必要的依赖库
         missing_packages = []
         
         # 检查psutil
-        try:
-            import psutil
-        except ImportError:
+        if not psutil_available:
             missing_packages.append("psutil")
             logger.warning("psutil library not found. Resource monitoring will be disabled.")
-            # 创建一个空函数以避免调用错误
-            def monitor_resources():
-                pass
         
         # 检查OpenCV
         try:
@@ -1051,7 +1254,7 @@ if __name__ == '__main__':
             logger.info(f"Running on: {system_info.system} {system_info.release}, Python {platform.python_version()}")
             
             # 如果psutil可用，获取更多系统信息
-            if 'psutil' not in missing_packages:
+            if psutil_available:
                 cpu_count = psutil.cpu_count(logical=False)
                 cpu_logical = psutil.cpu_count(logical=True)
                 memory = psutil.virtual_memory()
@@ -1076,4 +1279,7 @@ if __name__ == '__main__':
         if mpu_running:
             mpu_running = False
             logger.info("Stopped MPU6050 data thread during shutdown")
+        if resource_monitoring_active:
+            resource_monitoring_active = False
+            logger.info("Stopped resource monitoring during shutdown")
         logger.info("Server shutdown complete") 

@@ -80,6 +80,12 @@ const frameBuffer = {
 socket.on('connect', () => {
     console.log('Connected to server');
     console.log('Waiting for server to start video stream...');
+    
+    // 开始定期测量延迟
+    setInterval(measureLatency, 3000);
+    
+    // 更新诊断面板
+    updateDiagnosticPanel();
 });
 
 socket.on('disconnect', () => {
@@ -108,7 +114,8 @@ socket.on('status_update', (data) => {
 });
 
 socket.on('video_frame', (data) => {
-    const receiveTime = Date.now();
+    const receiveStartTime = Date.now();
+    
     try {
         if (data && data.frame) {
             frameStats.received++;
@@ -116,11 +123,15 @@ socket.on('video_frame', (data) => {
             // 记录帧元数据
             if (data.count && data.size) {
                 console.log(`帧 #${data.count} 接收, 大小: ${Math.round(data.size/1024)}KB`);
+                frameStats.lastFrameSize = data.size;
             }
+            
+            // 记录帧接收时间
+            frameStats.lastReceiveTime = Date.now() - receiveStartTime;
             
             // 计算自上一帧的时间差
             if (frameStats.lastFrameTime > 0) {
-                const timeDiff = receiveTime - frameStats.lastFrameTime;
+                const timeDiff = receiveStartTime - frameStats.lastFrameTime;
                 frameStats.frameTimes.push(timeDiff);
                 // 只保留最近10个时间差
                 if (frameStats.frameTimes.length > 10) {
@@ -133,13 +144,14 @@ socket.on('video_frame', (data) => {
                     frameStats.avgFps = Math.round(1000 / avgTime * 10) / 10;
                 }
             }
-            frameStats.lastFrameTime = receiveTime;
+            frameStats.lastFrameTime = receiveStartTime;
             
             // 更新性能统计
             const now = Date.now();
             if (now - frameStats.lastStatsUpdate > 2000) { // 每2秒更新一次状态
                 console.log(`视频性能: 已接收=${frameStats.received}, 已显示=${frameStats.displayed}, 平均FPS=${frameStats.avgFps}, 错误=${frameStats.errors}`);
                 updateVideoStats();
+                updateDiagnosticPanel();  // 更新诊断面板
                 frameStats.lastStatsUpdate = now;
             }
             
@@ -157,6 +169,13 @@ socket.on('video_frame', (data) => {
     } catch (error) {
         console.error('处理视频帧时出错:', error);
         frameStats.errors++;
+    }
+    
+    // 更新最后活动时间
+    const lastActivityElement = document.getElementById('last-activity');
+    if (lastActivityElement) {
+        const now = new Date();
+        lastActivityElement.textContent = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
     }
 });
 
@@ -286,7 +305,9 @@ function updateStatusIndicators(data) {
 function processNextFrame() {
     const frameData = frameBuffer.getNext();
     if (frameData) {
+        const renderStartTime = Date.now();
         displayVideoFrame(frameData);
+        frameStats.lastRenderTime = Date.now() - renderStartTime;
         
         // 如果缓冲区中还有帧，安排下一个帧的处理
         if (frameBuffer.frames.length > 0) {
@@ -627,4 +648,597 @@ window.addEventListener('beforeunload', () => {
     socket.emit('car_control', { x: 0, y: 0 });
     console.log('Car stopped due to page unload');
     // No need to stop the stream here, the socket disconnect event will handle cleanup
+});
+
+// 添加服务器资源监控UI创建函数
+function createResourceMonitorUI() {
+    // 检查是否已存在资源监控面板
+    if (document.getElementById('resource-monitor')) {
+        return;
+    }
+    
+    // 创建资源监控面板
+    const resourceMonitor = document.createElement('div');
+    resourceMonitor.id = 'resource-monitor';
+    resourceMonitor.className = 'resource-monitor';
+    resourceMonitor.innerHTML = `
+        <div class="resource-title">服务器资源监控</div>
+        <div class="resource-content">
+            <div class="resource-item">
+                <div class="resource-label">CPU使用率:</div>
+                <div class="resource-value" id="cpu-percent">--</div>
+                <div class="resource-progress-container">
+                    <div class="resource-progress" id="cpu-progress"></div>
+                </div>
+            </div>
+            <div class="resource-item">
+                <div class="resource-label">进程CPU:</div>
+                <div class="resource-value" id="process-cpu-percent">--</div>
+                <div class="resource-progress-container">
+                    <div class="resource-progress" id="process-cpu-progress"></div>
+                </div>
+            </div>
+            <div class="resource-item">
+                <div class="resource-label">内存使用率:</div>
+                <div class="resource-value" id="memory-percent">--</div>
+                <div class="resource-progress-container">
+                    <div class="resource-progress" id="memory-progress"></div>
+                </div>
+            </div>
+            <div class="resource-item">
+                <div class="resource-label">进程内存:</div>
+                <div class="resource-value" id="process-memory">--</div>
+            </div>
+            <div class="resource-item">
+                <div class="resource-label">磁盘使用率:</div>
+                <div class="resource-value" id="disk-percent">--</div>
+                <div class="resource-progress-container">
+                    <div class="resource-progress" id="disk-progress"></div>
+                </div>
+            </div>
+            <div class="resource-item">
+                <div class="resource-label">网络流量:</div>
+                <div class="resource-value" id="network-traffic">--</div>
+            </div>
+            <div class="resource-item">
+                <div class="resource-label">最后更新:</div>
+                <div class="resource-value" id="last-update">--</div>
+            </div>
+        </div>
+    `;
+    
+    // 添加样式
+    const style = document.createElement('style');
+    style.textContent = `
+        .resource-monitor {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            width: 300px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            border-radius: 5px;
+            padding: 10px;
+            font-family: Arial, sans-serif;
+            font-size: 12px;
+            z-index: 1000;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+        }
+        
+        .resource-title {
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 14px;
+            border-bottom: 1px solid #555;
+            padding-bottom: 5px;
+        }
+        
+        .resource-content {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .resource-item {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        
+        .resource-label {
+            width: 100px;
+            font-weight: normal;
+        }
+        
+        .resource-value {
+            width: 60px;
+            text-align: right;
+            font-weight: bold;
+        }
+        
+        .resource-progress-container {
+            flex: 1;
+            height: 8px;
+            background-color: #444;
+            border-radius: 4px;
+            margin-left: 10px;
+            overflow: hidden;
+        }
+        
+        .resource-progress {
+            height: 100%;
+            width: 0%;
+            background-color: #4CAF50;
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+    `;
+    
+    // 添加到文档
+    document.head.appendChild(style);
+    document.body.appendChild(resourceMonitor);
+    
+    console.log('Resource monitor UI created.');
+}
+
+// 更新资源监控UI函数
+function updateResourceMonitorUI(data) {
+    if (!document.getElementById('resource-monitor')) {
+        createResourceMonitorUI();
+    }
+    
+    // 更新CPU使用率
+    const cpuPercent = document.getElementById('cpu-percent');
+    const cpuProgress = document.getElementById('cpu-progress');
+    if (cpuPercent && cpuProgress) {
+        cpuPercent.textContent = `${data.cpu.percent}%`;
+        cpuProgress.style.width = `${data.cpu.percent}%`;
+        
+        // 根据使用率更改颜色
+        if (data.cpu.percent > 80) {
+            cpuProgress.style.backgroundColor = '#FF5252';
+        } else if (data.cpu.percent > 60) {
+            cpuProgress.style.backgroundColor = '#FFC107';
+        } else {
+            cpuProgress.style.backgroundColor = '#4CAF50';
+        }
+    }
+    
+    // 更新进程CPU使用率
+    const processCpuPercent = document.getElementById('process-cpu-percent');
+    const processCpuProgress = document.getElementById('process-cpu-progress');
+    if (processCpuPercent && processCpuProgress) {
+        processCpuPercent.textContent = `${data.cpu.process_percent}%`;
+        processCpuProgress.style.width = `${data.cpu.process_percent}%`;
+        
+        // 根据使用率更改颜色
+        if (data.cpu.process_percent > 80) {
+            processCpuProgress.style.backgroundColor = '#FF5252';
+        } else if (data.cpu.process_percent > 60) {
+            processCpuProgress.style.backgroundColor = '#FFC107';
+        } else {
+            processCpuProgress.style.backgroundColor = '#4CAF50';
+        }
+    }
+    
+    // 更新内存使用率
+    const memoryPercent = document.getElementById('memory-percent');
+    const memoryProgress = document.getElementById('memory-progress');
+    if (memoryPercent && memoryProgress) {
+        memoryPercent.textContent = `${data.memory.percent}%`;
+        memoryProgress.style.width = `${data.memory.percent}%`;
+        
+        // 根据使用率更改颜色
+        if (data.memory.percent > 80) {
+            memoryProgress.style.backgroundColor = '#FF5252';
+        } else if (data.memory.percent > 60) {
+            memoryProgress.style.backgroundColor = '#FFC107';
+        } else {
+            memoryProgress.style.backgroundColor = '#4CAF50';
+        }
+    }
+    
+    // 更新进程内存使用
+    const processMemory = document.getElementById('process-memory');
+    if (processMemory) {
+        processMemory.textContent = `${data.memory.process_mb.toFixed(1)} MB`;
+    }
+    
+    // 更新磁盘使用率
+    const diskPercent = document.getElementById('disk-percent');
+    const diskProgress = document.getElementById('disk-progress');
+    if (diskPercent && diskProgress) {
+        diskPercent.textContent = `${data.disk.percent}%`;
+        diskProgress.style.width = `${data.disk.percent}%`;
+        
+        // 根据使用率更改颜色
+        if (data.disk.percent > 85) {
+            diskProgress.style.backgroundColor = '#FF5252';
+        } else if (data.disk.percent > 70) {
+            diskProgress.style.backgroundColor = '#FFC107';
+        } else {
+            diskProgress.style.backgroundColor = '#4CAF50';
+        }
+    }
+    
+    // 更新网络流量
+    const networkTraffic = document.getElementById('network-traffic');
+    if (networkTraffic) {
+        networkTraffic.textContent = `↑${data.network.sent_mb.toFixed(1)} | ↓${data.network.recv_mb.toFixed(1)} MB`;
+    }
+    
+    // 更新最后更新时间
+    const lastUpdate = document.getElementById('last-update');
+    if (lastUpdate) {
+        const now = new Date();
+        lastUpdate.textContent = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+    }
+}
+
+// 添加Socket.IO事件处理程序接收资源更新
+socket.on('resource_update', (data) => {
+    console.log('Received resource update:', data);
+    updateResourceMonitorUI(data);
+});
+
+// 在文档加载完成后初始化资源监控UI
+document.addEventListener('DOMContentLoaded', function() {
+    // 初始化其他UI...
+    
+    // 创建资源监控UI
+    createResourceMonitorUI();
+});
+
+// 添加诊断面板相关函数
+// 扩展frameStats对象添加更多性能指标
+frameStats.lastFrameSize = 0;
+frameStats.lastReceiveTime = 0;
+frameStats.lastRenderTime = 0;
+frameStats.connectionIssues = 0;
+
+// 诊断面板创建函数
+function createDiagnosticPanel() {
+    // 检查是否已存在诊断面板
+    if (document.getElementById('diagnostic-panel')) {
+        return;
+    }
+    
+    // 创建诊断面板
+    const diagnosticPanel = document.createElement('div');
+    diagnosticPanel.id = 'diagnostic-panel';
+    diagnosticPanel.className = 'diagnostic-panel';
+    diagnosticPanel.innerHTML = `
+        <div class="diagnostic-title">视频流诊断面板</div>
+        <div class="diagnostic-content">
+            <div class="diagnostic-section">
+                <div class="section-title">视频流性能</div>
+                <div class="diagnostic-item">
+                    <div class="diagnostic-label">帧接收率:</div>
+                    <div class="diagnostic-value" id="frame-rate">0 FPS</div>
+                </div>
+                <div class="diagnostic-item">
+                    <div class="diagnostic-label">帧缓冲:</div>
+                    <div class="diagnostic-value" id="frame-buffer">0/3</div>
+                </div>
+                <div class="diagnostic-item">
+                    <div class="diagnostic-label">帧大小:</div>
+                    <div class="diagnostic-value" id="frame-size">0 KB</div>
+                </div>
+                <div class="diagnostic-item">
+                    <div class="diagnostic-label">接收耗时:</div>
+                    <div class="diagnostic-value" id="receive-time">0 ms</div>
+                </div>
+                <div class="diagnostic-item">
+                    <div class="diagnostic-label">渲染耗时:</div>
+                    <div class="diagnostic-value" id="render-time">0 ms</div>
+                </div>
+                <div class="diagnostic-item">
+                    <div class="diagnostic-label">总帧数:</div>
+                    <div class="diagnostic-value" id="total-frames">0</div>
+                </div>
+                <div class="diagnostic-item">
+                    <div class="diagnostic-label">解码错误:</div>
+                    <div class="diagnostic-value" id="decode-errors">0</div>
+                </div>
+            </div>
+            <div class="diagnostic-section">
+                <div class="section-title">网络状态</div>
+                <div class="diagnostic-item">
+                    <div class="diagnostic-label">连接状态:</div>
+                    <div class="diagnostic-value" id="connection-status">连接中</div>
+                </div>
+                <div class="diagnostic-item">
+                    <div class="diagnostic-label">延迟:</div>
+                    <div class="diagnostic-value" id="latency">-- ms</div>
+                </div>
+                <div class="diagnostic-item">
+                    <div class="diagnostic-label">最后活动:</div>
+                    <div class="diagnostic-value" id="last-activity">--:--:--</div>
+                </div>
+            </div>
+        </div>
+        <div class="diagnostic-footer">
+            <button id="toggle-diagnostic" class="diagnostic-button">隐藏诊断</button>
+            <button id="clear-diagnostic" class="diagnostic-button">重置统计</button>
+        </div>
+    `;
+    
+    // 添加样式
+    const style = document.createElement('style');
+    style.textContent = `
+        .diagnostic-panel {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            width: 280px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            border-radius: 5px;
+            padding: 10px;
+            font-family: Arial, sans-serif;
+            font-size: 12px;
+            z-index: 1000;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+            transition: transform 0.3s ease;
+        }
+        
+        .diagnostic-panel.collapsed {
+            transform: translateY(calc(100% - 30px));
+        }
+        
+        .diagnostic-title {
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 14px;
+            border-bottom: 1px solid #555;
+            padding-bottom: 5px;
+            cursor: pointer;
+        }
+        
+        .diagnostic-content {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+        
+        .diagnostic-section {
+            border: 1px solid #555;
+            border-radius: 4px;
+            padding: 8px;
+        }
+        
+        .section-title {
+            font-weight: bold;
+            margin-bottom: 8px;
+            color: #4CAF50;
+        }
+        
+        .diagnostic-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        
+        .diagnostic-label {
+            font-weight: normal;
+        }
+        
+        .diagnostic-value {
+            font-weight: bold;
+        }
+        
+        .diagnostic-footer {
+            display: flex;
+            justify-content: space-between;
+        }
+        
+        .diagnostic-button {
+            background-color: #333;
+            color: white;
+            border: 1px solid #555;
+            border-radius: 3px;
+            padding: 4px 8px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        
+        .diagnostic-button:hover {
+            background-color: #444;
+        }
+    `;
+    
+    // 添加到文档
+    document.head.appendChild(style);
+    document.body.appendChild(diagnosticPanel);
+    
+    // 添加折叠功能
+    const title = diagnosticPanel.querySelector('.diagnostic-title');
+    title.addEventListener('click', function() {
+        diagnosticPanel.classList.toggle('collapsed');
+        
+        // 更新按钮文本
+        const toggleButton = document.getElementById('toggle-diagnostic');
+        if (toggleButton) {
+            if (diagnosticPanel.classList.contains('collapsed')) {
+                toggleButton.textContent = '显示诊断';
+            } else {
+                toggleButton.textContent = '隐藏诊断';
+            }
+        }
+    });
+    
+    // 添加按钮功能
+    const toggleButton = document.getElementById('toggle-diagnostic');
+    if (toggleButton) {
+        toggleButton.addEventListener('click', function() {
+            diagnosticPanel.classList.toggle('collapsed');
+            this.textContent = diagnosticPanel.classList.contains('collapsed') ? '显示诊断' : '隐藏诊断';
+        });
+    }
+    
+    // 重置统计按钮
+    const clearButton = document.getElementById('clear-diagnostic');
+    if (clearButton) {
+        clearButton.addEventListener('click', function() {
+            resetDiagnosticStats();
+        });
+    }
+    
+    console.log('Diagnostic panel created');
+}
+
+// 重置诊断统计数据
+function resetDiagnosticStats() {
+    frameStats.received = 0;
+    frameStats.displayed = 0;
+    frameStats.errors = 0;
+    frameStats.frameTimes = [];
+    frameStats.avgFps = 0;
+    frameStats.bufferSize = 0;
+    frameStats.lastFrameTime = 0;
+    frameStats.lastStatsUpdate = Date.now();
+    frameStats.lastFrameSize = 0;
+    frameStats.lastReceiveTime = 0;
+    frameStats.lastRenderTime = 0;
+    frameStats.connectionIssues = 0;
+    
+    // 更新UI
+    updateDiagnosticPanel();
+    
+    console.log('Diagnostic statistics reset');
+}
+
+// 测量网络延迟
+let lastPingTime = 0;
+let currentLatency = 0;
+
+function measureLatency() {
+    lastPingTime = Date.now();
+    socket.emit('ping_request');
+}
+
+// 更新诊断面板的值
+function updateDiagnosticPanel() {
+    // 检查面板是否已创建
+    if (!document.getElementById('diagnostic-panel')) {
+        createDiagnosticPanel();
+    }
+    
+    // 更新帧率
+    const frameRateElement = document.getElementById('frame-rate');
+    if (frameRateElement) {
+        frameRateElement.textContent = `${frameStats.avgFps.toFixed(1)} FPS`;
+        
+        // 根据帧率设置颜色
+        if (frameStats.avgFps < 5) {
+            frameRateElement.style.color = '#FF5252';
+        } else if (frameStats.avgFps < 10) {
+            frameRateElement.style.color = '#FFC107';
+        } else {
+            frameRateElement.style.color = '#4CAF50';
+        }
+    }
+    
+    // 更新帧缓冲
+    const frameBufferElement = document.getElementById('frame-buffer');
+    if (frameBufferElement) {
+        frameBufferElement.textContent = `${frameStats.bufferSize}/${frameBuffer.maxSize}`;
+    }
+    
+    // 更新帧大小
+    const frameSizeElement = document.getElementById('frame-size');
+    if (frameSizeElement && frameStats.lastFrameSize) {
+        frameSizeElement.textContent = `${(frameStats.lastFrameSize / 1024).toFixed(1)} KB`;
+    }
+    
+    // 更新接收耗时
+    const receiveTimeElement = document.getElementById('receive-time');
+    if (receiveTimeElement && frameStats.lastReceiveTime) {
+        receiveTimeElement.textContent = `${frameStats.lastReceiveTime.toFixed(1)} ms`;
+    }
+    
+    // 更新渲染耗时
+    const renderTimeElement = document.getElementById('render-time');
+    if (renderTimeElement && frameStats.lastRenderTime) {
+        renderTimeElement.textContent = `${frameStats.lastRenderTime.toFixed(1)} ms`;
+    }
+    
+    // 更新总帧数
+    const totalFramesElement = document.getElementById('total-frames');
+    if (totalFramesElement) {
+        totalFramesElement.textContent = frameStats.received.toString();
+    }
+    
+    // 更新解码错误
+    const decodeErrorsElement = document.getElementById('decode-errors');
+    if (decodeErrorsElement) {
+        decodeErrorsElement.textContent = frameStats.errors.toString();
+        
+        // 根据错误数设置颜色
+        if (frameStats.errors > 10) {
+            decodeErrorsElement.style.color = '#FF5252';
+        } else if (frameStats.errors > 0) {
+            decodeErrorsElement.style.color = '#FFC107';
+        } else {
+            decodeErrorsElement.style.color = '#4CAF50';
+        }
+    }
+    
+    // 更新连接状态
+    const connectionStatusElement = document.getElementById('connection-status');
+    if (connectionStatusElement) {
+        if (socket.connected) {
+            connectionStatusElement.textContent = '已连接';
+            connectionStatusElement.style.color = '#4CAF50';
+        } else {
+            connectionStatusElement.textContent = '断开连接';
+            connectionStatusElement.style.color = '#FF5252';
+        }
+    }
+    
+    // 更新延迟
+    const latencyElement = document.getElementById('latency');
+    if (latencyElement) {
+        latencyElement.textContent = `${currentLatency} ms`;
+        
+        // 根据延迟设置颜色
+        if (currentLatency > 200) {
+            latencyElement.style.color = '#FF5252';
+        } else if (currentLatency > 100) {
+            latencyElement.style.color = '#FFC107';
+        } else if (currentLatency > 0) {
+            latencyElement.style.color = '#4CAF50';
+        }
+    }
+    
+    // 更新最后活动时间
+    const lastActivityElement = document.getElementById('last-activity');
+    if (lastActivityElement) {
+        const now = new Date();
+        lastActivityElement.textContent = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+    }
+}
+
+// 添加延迟测量响应处理器
+socket.on('ping_response', () => {
+    const pingTime = Date.now() - lastPingTime;
+    currentLatency = pingTime;
+    
+    // 更新诊断面板中的延迟
+    const latencyElement = document.getElementById('latency');
+    if (latencyElement) {
+        latencyElement.textContent = `${currentLatency} ms`;
+        
+        // 根据延迟设置颜色
+        if (currentLatency > 200) {
+            latencyElement.style.color = '#FF5252';
+        } else if (currentLatency > 100) {
+            latencyElement.style.color = '#FFC107';
+        } else {
+            latencyElement.style.color = '#4CAF50';
+        }
+    }
 }); 
