@@ -25,7 +25,18 @@ logger = logging.getLogger(__name__)
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'smartcar2023'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+
+# 优化Socket.IO配置
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*", 
+    async_mode='eventlet',
+    ping_timeout=10,  # 减少ping超时时间，更快地检测断连
+    ping_interval=5,  # 增加ping频率，保持连接活跃
+    max_http_buffer_size=5 * 1024 * 1024,  # 增加缓冲区以处理视频数据
+    # 强制使用WebSocket传输，避免长轮询
+    transports=['websocket']  
+)
 
 # Initialize robot
 robot_available = False
@@ -415,8 +426,18 @@ def generate_frames():
     logger.info("Video streaming thread started")
     frame_count = 0
     error_count = 0
+    last_log_time = time.time()
+    fps_stats = []  # 存储每秒处理的帧数统计
+    
+    # 视频帧率和质量设置
+    TARGET_FPS = 10  # 降低目标帧率以减轻服务器负担
+    FRAME_WIDTH = 320
+    FRAME_HEIGHT = 240
+    JPEG_QUALITY = 70  # 降低JPEG质量以减小数据大小
     
     while is_streaming and camera_available:
+        loop_start = time.time()  # 测量每帧处理时间
+        
         try:
             success, frame = camera.read()
             if not success:
@@ -430,13 +451,28 @@ def generate_frames():
                         if not args.simulation:
                             try:
                                 camera.release()
+                                time.sleep(1)  # 给相机更多时间重置
+                                
+                                # 重新打开相机并设置参数
                                 camera = cv2.VideoCapture(0)
-                                camera.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-                                camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-                                camera.set(cv2.CAP_PROP_FPS, 15)
+                                # 尝试设置为MJPG格式提高效率
+                                camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                                camera.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+                                camera.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+                                camera.set(cv2.CAP_PROP_FPS, TARGET_FPS)
+                                
+                                # 获取实际相机设置
+                                actual_width = camera.get(cv2.CAP_PROP_FRAME_WIDTH)
+                                actual_height = camera.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                                actual_fps = camera.get(cv2.CAP_PROP_FPS)
+                                actual_format = camera.get(cv2.CAP_PROP_FOURCC)
+                                
+                                logger.info(f"Reopened camera settings - Width: {actual_width}, Height: {actual_height}, FPS: {actual_fps}, Format: {chr(int(actual_format) & 0xFF)}{chr((int(actual_format) >> 8) & 0xFF)}{chr((int(actual_format) >> 16) & 0xFF)}{chr((int(actual_format) >> 24) & 0xFF)}")
+                                
                                 ret_test, _ = camera.read()
                                 if ret_test:
                                     logger.info("Camera successfully reopened")
+                                    error_count = 0
                                 else:
                                     logger.error("Failed to reopen camera")
                                     camera_available = False
@@ -452,34 +488,66 @@ def generate_frames():
             error_count = 0
             frame_count += 1
                 
-            # Process frame (resize, add overlay, etc.)
-            frame = cv2.resize(frame, (320, 240))
+            # 处理前记录原始帧大小
+            original_shape = frame.shape
             
-            # Add HUD overlay
-            cv2.putText(frame, f"Speed: {current_speed}", (10, 20), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            cv2.putText(frame, f"H: {gimbal_h_angle}°, V: {gimbal_v_angle}°", (10, 40), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            # 降低处理分辨率以提高性能
+            frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
             
-            # 确保图像颜色空间正确 (Ensure correct color space)
+            # 简化HUD叠加，减少处理开销
+            if frame_count % 5 == 0:  # 只在每5帧更新一次HUD信息
+                cv2.putText(frame, f"Speed: {current_speed}", (10, 20), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                cv2.putText(frame, f"H: {gimbal_h_angle}°, V: {gimbal_v_angle}°", (10, 40), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            
+            # 确保图像颜色空间正确
             if len(frame.shape) < 3:
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             elif frame.shape[2] == 1:
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             
-            # 使用高质量的JPEG编码 (Use high quality JPEG encoding)
+            # 使用优化的JPEG编码参数
             try:
-                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
+                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+                encode_start = time.time()
                 _, buffer = cv2.imencode('.jpg', frame, encode_param)
                 frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                encode_time = time.time() - encode_start
                 
-                # Log every 100 frames for diagnostics
-                if frame_count % 100 == 0:
-                    logger.info(f"Streaming: emitted {frame_count} frames so far")
+                # 为帧添加序号和时间戳，便于调试
+                frame_data = {
+                    'frame': frame_base64,
+                    'count': frame_count,
+                    'time': time.time(),
+                    'size': len(frame_base64)
+                }
                 
-                # Emit frame to clients using base64 encoding
-                socketio.emit('video_frame', {'frame': frame_base64})
-                time.sleep(1/15)  # Limit to 15 FPS
+                # 每10帧记录一次详细信息
+                if frame_count % 10 == 0:
+                    logger.debug(f"Frame #{frame_count}: size={len(frame_base64)/1024:.1f}KB, encode_time={encode_time*1000:.1f}ms")
+                
+                # 每秒记录一次性能统计
+                current_time = time.time()
+                if current_time - last_log_time >= 1.0:
+                    fps = len(fps_stats)
+                    fps_stats.clear()
+                    logger.info(f"Streaming performance: {fps} FPS, last frame size: {len(frame_base64)/1024:.1f}KB")
+                    last_log_time = current_time
+                else:
+                    fps_stats.append(1)
+                
+                # 逐个发送帧到各个客户端，而不是广播给所有客户端
+                clients = socketio.server.get_namespace('/')._get_clients()
+                for client_sid in clients:
+                    socketio.emit('video_frame', frame_data, room=client_sid)
+                
+                # 帧率控制
+                process_time = time.time() - loop_start
+                sleep_time = max(0, 1.0/TARGET_FPS - process_time)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                    
             except Exception as encode_error:
                 logger.error(f"Frame encoding error: {encode_error}")
                 time.sleep(0.1)

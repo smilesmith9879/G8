@@ -41,6 +41,41 @@ let cameraControlInterval = null;
 let carJoystickData = { x: 0, y: 0 };
 let cameraJoystickData = { x: 0, y: 0 };
 
+// 添加性能监控变量
+let frameStats = {
+    received: 0,
+    displayed: 0,
+    errors: 0,
+    lastFrameTime: 0,
+    frameTimes: [],  // 存储最近10帧的处理时间
+    avgFps: 0,
+    bufferSize: 0,
+    lastStatsUpdate: Date.now()
+};
+
+// 用于处理视频流的帧缓冲区
+const frameBuffer = {
+    maxSize: 3,  // 最多缓存3帧
+    frames: [],
+    add: function(frame) {
+        if (this.frames.length >= this.maxSize) {
+            this.frames.shift(); // 移除最旧的帧
+        }
+        this.frames.push(frame);
+        frameStats.bufferSize = this.frames.length;
+    },
+    getNext: function() {
+        if (this.frames.length > 0) {
+            return this.frames.shift();
+        }
+        return null;
+    },
+    clear: function() {
+        this.frames = [];
+        frameStats.bufferSize = 0;
+    }
+};
+
 // Socket.IO event handlers
 socket.on('connect', () => {
     console.log('Connected to server');
@@ -73,10 +108,55 @@ socket.on('status_update', (data) => {
 });
 
 socket.on('video_frame', (data) => {
-    if (data && data.frame) {
-        displayVideoFrame(data.frame);
-    } else {
-        console.error('Received invalid video frame data');
+    const receiveTime = Date.now();
+    try {
+        if (data && data.frame) {
+            frameStats.received++;
+            
+            // 记录帧元数据
+            if (data.count && data.size) {
+                console.log(`帧 #${data.count} 接收, 大小: ${Math.round(data.size/1024)}KB`);
+            }
+            
+            // 计算自上一帧的时间差
+            if (frameStats.lastFrameTime > 0) {
+                const timeDiff = receiveTime - frameStats.lastFrameTime;
+                frameStats.frameTimes.push(timeDiff);
+                // 只保留最近10个时间差
+                if (frameStats.frameTimes.length > 10) {
+                    frameStats.frameTimes.shift();
+                }
+                
+                // 计算平均FPS
+                if (frameStats.frameTimes.length > 0) {
+                    const avgTime = frameStats.frameTimes.reduce((a, b) => a + b, 0) / frameStats.frameTimes.length;
+                    frameStats.avgFps = Math.round(1000 / avgTime * 10) / 10;
+                }
+            }
+            frameStats.lastFrameTime = receiveTime;
+            
+            // 更新性能统计
+            const now = Date.now();
+            if (now - frameStats.lastStatsUpdate > 2000) { // 每2秒更新一次状态
+                console.log(`视频性能: 已接收=${frameStats.received}, 已显示=${frameStats.displayed}, 平均FPS=${frameStats.avgFps}, 错误=${frameStats.errors}`);
+                updateVideoStats();
+                frameStats.lastStatsUpdate = now;
+            }
+            
+            // 将帧添加到缓冲区
+            frameBuffer.add(data.frame);
+            
+            // 如果这是第一帧，立即处理
+            if (frameStats.received === 1 || frameBuffer.frames.length === 1) {
+                processNextFrame();
+            }
+        } else {
+            console.error('收到无效的视频帧数据');
+            frameStats.errors++;
+        }
+    } catch (error) {
+        console.error('处理视频帧时出错:', error);
+        frameStats.errors++;
     }
 });
 
@@ -202,16 +282,46 @@ function updateStatusIndicators(data) {
     }
 }
 
+// 创建一个处理帧的函数，可以独立调用
+function processNextFrame() {
+    const frameData = frameBuffer.getNext();
+    if (frameData) {
+        displayVideoFrame(frameData);
+        
+        // 如果缓冲区中还有帧，安排下一个帧的处理
+        if (frameBuffer.frames.length > 0) {
+            // 使用requestAnimationFrame来优化渲染性能
+            requestAnimationFrame(processNextFrame);
+        }
+    }
+}
+
+// 添加视频状态更新到UI
+function updateVideoStats() {
+    // 如果有视频状态显示元素，则更新它
+    const statsElement = document.getElementById('video-stats');
+    if (statsElement) {
+        statsElement.innerHTML = `
+            <div>FPS: ${frameStats.avgFps}</div>
+            <div>缓冲: ${frameStats.bufferSize}/${frameBuffer.maxSize}</div>
+            <div>已接收: ${frameStats.received}</div>
+        `;
+    }
+}
+
 // Function to display video frame
 function displayVideoFrame(frameData) {
     if (!frameData) {
-        console.error("Empty frame data received");
+        console.error("收到空帧数据");
+        frameStats.errors++;
         return;
     }
     
+    const processStart = Date.now();
+    
     // 更新显示状态，但不触发任何事件
     if (!isStreaming) {
-        console.log("First frame received, updating UI");
+        console.log("收到第一帧，更新UI");
         isStreaming = true;
         if (videoPlaceholder && videoPlaceholder.style) {
             videoPlaceholder.style.display = 'none';
@@ -219,13 +329,35 @@ function displayVideoFrame(frameData) {
         if (videoCanvas && videoCanvas.style) {
             videoCanvas.style.display = 'block';
         }
+        
+        // 添加视频状态显示元素
+        if (!document.getElementById('video-stats')) {
+            const statsDiv = document.createElement('div');
+            statsDiv.id = 'video-stats';
+            statsDiv.style.position = 'absolute';
+            statsDiv.style.top = '5px';
+            statsDiv.style.right = '5px';
+            statsDiv.style.backgroundColor = 'rgba(0,0,0,0.5)';
+            statsDiv.style.color = 'white';
+            statsDiv.style.padding = '5px';
+            statsDiv.style.fontSize = '12px';
+            statsDiv.style.zIndex = '1000';
+            document.body.appendChild(statsDiv);
+        }
+    }
+    
+    // 确保videoCanvas和ctx已初始化
+    if (!videoCanvas || !ctx) {
+        console.error("视频画布或上下文未初始化");
+        frameStats.errors++;
+        return;
     }
     
     // 确保canvas已初始化
     if (!videoCanvas.width || !videoCanvas.height) {
         videoCanvas.width = 320;
         videoCanvas.height = 240;
-        console.log("Canvas initialized to 320x240");
+        console.log("画布初始化为320x240");
     }
     
     try {
@@ -233,40 +365,51 @@ function displayVideoFrame(frameData) {
         
         // 图像加载错误处理
         img.onerror = (err) => {
-            console.error("Failed to load image from base64 data:", err);
+            console.error("无法从base64数据加载图像:", err);
+            frameStats.errors++;
         };
         
         img.onload = () => {
             try {
-                // Clear canvas
+                // 清除画布
                 ctx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
                 
-                // Draw image
+                // 绘制图像
                 ctx.drawImage(img, 0, 0, videoCanvas.width, videoCanvas.height);
                 
-                // 每100帧记录一次，避免控制台过多日志
-                if (window.frameCounter === undefined) {
-                    window.frameCounter = 0;
+                // 记录显示成功
+                frameStats.displayed++;
+                
+                // 绘制性能信息到画布上
+                ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                ctx.fillRect(5, 5, 100, 20);
+                ctx.fillStyle = 'white';
+                ctx.font = '12px Arial';
+                ctx.fillText(`FPS: ${frameStats.avgFps}`, 10, 20);
+                
+                // 计算处理时间
+                const processTime = Date.now() - processStart;
+                if (processTime > 100) {
+                    console.warn(`帧处理耗时较长: ${processTime}ms`);
                 }
-                window.frameCounter++;
-                if (window.frameCounter % 100 === 0) {
-                    console.log(`Displayed ${window.frameCounter} frames`);
-                }
+                
             } catch (drawError) {
-                console.error("Error drawing image to canvas:", drawError);
+                console.error("绘制图像到画布时出错:", drawError);
+                frameStats.errors++;
             }
         };
         
-        // Use base64 encoded frame directly with explicit MIME type
+        // 使用base64编码帧直接与明确的MIME类型
         const src = 'data:image/jpeg;base64,' + frameData;
         img.src = src;
         
         // 调试帮助 - 只在帧数据异常小时警告
-        if (frameData.length < 100) {
-            console.warn("Received suspiciously small frame data:", frameData.length, "bytes");
+        if (frameData.length < 1000) {
+            console.warn("接收到可疑的小帧数据:", frameData.length, "字节");
         }
     } catch (e) {
-        console.error("Error displaying video frame:", e);
+        console.error("显示视频帧时出错:", e);
+        frameStats.errors++;
     }
 }
 
