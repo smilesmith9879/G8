@@ -41,12 +41,10 @@ app.config['SECRET_KEY'] = 'smartcar2023'
 socketio = SocketIO(
     app, 
     cors_allowed_origins="*", 
-    async_mode='eventlet',
-    ping_timeout=10,  # 减少ping超时时间，更快地检测断连
-    ping_interval=5,  # 增加ping频率，保持连接活跃
-    max_http_buffer_size=5 * 1024 * 1024,  # 增加缓冲区以处理视频数据
-    # 强制使用WebSocket传输，避免长轮询
-    transports=['websocket']  
+    async_mode='threading',  # 使用threading模式增强性能
+    ping_timeout=60,         # 增加ping超时到60秒
+    ping_interval=25,        # 增加ping间隔到25秒
+    max_http_buffer_size=10 * 1024 * 1024
 )
 
 # Initialize robot
@@ -609,7 +607,7 @@ def monitor_resources():
 def generate_frames():
     global is_streaming, camera_available, camera, camera_lock
     
-    logger.info("Video streaming thread started")
+    logger.info("视频流线程启动，使用threading模式，ping间隔: 25秒, ping超时: 60秒")
     frame_count = 0
     error_count = 0
     last_log_time = time.time()
@@ -706,18 +704,17 @@ def generate_frames():
                     
                 # 处理前记录原始帧大小
                 original_shape = frame.shape
-                resize_start = time.time()
                 
-                # 降低处理分辨率以提高性能
-                frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
-                resize_time = time.time() - resize_start
+                # 调整大小保持原始分辨率
+                # frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
                 
-                # 简化HUD叠加，减少处理开销
-                if frame_count % 5 == 0:  # 只在每5帧更新一次HUD信息
-                    cv2.putText(frame, f"Speed: {current_speed}", (10, 20), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                    cv2.putText(frame, f"H: {gimbal_h_angle}°, V: {gimbal_v_angle}°", (10, 40), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                # 添加一个简单的HUD
+                cv2.putText(frame, f"Frame: {frame_count}", (10, 30), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                
+                current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                cv2.putText(frame, current_time, (10, 60), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 
                 # 确保图像颜色空间正确
                 if len(frame.shape) < 3:
@@ -725,16 +722,34 @@ def generate_frames():
                 elif frame.shape[2] == 1:
                     frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
                 
+                # 添加帧基本信息日志
+                if frame_count % 30 == 0:  # 每30帧记录一次详细信息
+                    logger.info(f"视频帧 #{frame_count}: 形状={frame.shape}, 类型={frame.dtype}, 非零像素={np.count_nonzero(frame)}")
+                
                 # 使用优化的JPEG编码参数
                 try:
                     encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
                     encode_start = time.time()
                     _, buffer = cv2.imencode('.jpg', frame, encode_param)
+                    
+                    # 验证buffer非空
+                    if buffer is None or len(buffer) == 0:
+                        logger.error(f"帧 #{frame_count}: 编码后buffer为空")
+                        time.sleep(0.1)
+                        continue
+                        
                     frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                    
+                    # 验证Base64数据
+                    if not frame_base64 or len(frame_base64) < 100:  # 基本验证，确保数据不为空且长度合理
+                        logger.error(f"帧 #{frame_count}: Base64编码异常，长度={len(frame_base64) if frame_base64 else 0}")
+                        time.sleep(0.1)
+                        continue
+                    
                     encode_time = time.time() - encode_start
                     
                     if encode_time > 0.1:  # 如果编码时间过长，记录日志
-                        logger.warning(f"Video stream: Frame encoding took {encode_time:.3f}s, which is slow")
+                        logger.warning(f"视频流: 帧编码耗时 {encode_time:.3f}s")
                     
                     # 为帧添加序号和时间戳，便于调试
                     frame_data = {
@@ -746,63 +761,31 @@ def generate_frames():
                     
                     # 每10帧记录一次详细信息
                     if frame_count % 10 == 0:
-                        logger.debug(f"Frame #{frame_count}: size={len(frame_base64)/1024:.1f}KB, encode_time={encode_time*1000:.1f}ms")
+                        logger.debug(f"帧 #{frame_count}: 大小={len(frame_base64)/1024:.1f}KB, 编码时间={encode_time*1000:.1f}ms")
                     
                     # 发送帧，测量发送时间
                     emit_start = time.time()
-                    # 逐个发送帧到各个客户端，而不是广播给所有客户端
-                    clients = socketio.server.get_namespace('/')._get_clients()
-                    client_count = len(clients)
-                    
-                    for client_sid in clients:
-                        socketio.emit('video_frame', frame_data, room=client_sid)
+                    try:
+                        # 直接广播帧到所有客户端，而不是尝试获取客户端列表
+                        socketio.emit('video_frame', frame_data)
                         
-                    emit_time = time.time() - emit_start
-                    
-                    if emit_time > 0.2:  # 如果发送时间过长，记录日志
-                        logger.warning(f"Video stream: Frame emission to {client_count} clients took {emit_time:.3f}s, which is slow")
-                    
-                    # 每处理100帧，记录一次总体信息
-                    if frame_count % 100 == 0:
-                        logger.info(f"Streaming: emitted {frame_count} frames so far")
-                    
-                    # 每秒记录一次性能统计
-                    current_time = time.time()
-                    if current_time - last_log_time >= 1.0:
-                        fps = len(fps_stats)
-                        fps_stats.clear()
-                        logger.info(f"Streaming performance: {fps} FPS, last frame size: {len(frame_base64)/1024:.1f}KB")
-                        last_log_time = current_time
-                    else:
-                        fps_stats.append(1)
-                    
-                    # 记录总处理时间
-                    total_process_time = time.time() - loop_start
-                    frame_processing_times.append(total_process_time)
-                    
-                    # 每30秒输出一次详细的性能报告
-                    if current_time - last_detailed_log >= 30.0 and len(frame_processing_times) > 0:
-                        avg_process_time = sum(frame_processing_times) / len(frame_processing_times)
-                        max_process_time = max(frame_processing_times)
-                        min_process_time = min(frame_processing_times)
+                        emit_time = time.time() - emit_start
                         
-                        logger.info(f"Video stream performance report - Average process time: {avg_process_time*1000:.1f}ms, Min: {min_process_time*1000:.1f}ms, Max: {max_process_time*1000:.1f}ms")
-                        logger.info(f"Current client count: {client_count}, Frame count: {frame_count}")
+                        # 详细日志记录
+                        if frame_count % 50 == 0:  # 每50帧记录一次
+                            logger.info(f"帧 #{frame_count}: 发送成功, 大小={len(frame_base64)/1024:.1f}KB, 编码耗时={encode_time*1000:.1f}ms, 发送耗时={emit_time*1000:.1f}ms")
                         
-                        # 重置统计数据
-                        frame_processing_times = []
-                        last_detailed_log = current_time
+                        if emit_time > 0.2:  # 如果发送时间过长，记录日志
+                            logger.warning(f"视频流: 发送帧耗时 {emit_time:.3f}s")
                     
-                    # 帧率控制
-                    process_time = time.time() - loop_start
-                    sleep_time = max(0, 1.0/TARGET_FPS - process_time)
-                    if sleep_time > 0:
-                        time.sleep(sleep_time)
-                    elif process_time > 1.5/TARGET_FPS:  # 如果处理时间超过目标帧率的1.5倍，记录警告
-                        logger.warning(f"Video stream: Frame processing time {process_time:.3f}s exceeds target frame time {1.0/TARGET_FPS:.3f}s")
-                        
+                    except Exception as emit_error:
+                        logger.error(f"帧 #{frame_count}: 发送失败: {emit_error}")
+                        # 尝试重新连接或恢复
+                        socketio.sleep(0.5)  # 短暂等待
+                    
                 except Exception as encode_error:
-                    logger.error(f"Frame encoding error: {encode_error}")
+                    logger.error(f"帧 #{frame_count}: 编码错误: {encode_error}")
+                    logger.debug(f"帧 #{frame_count}: 形状={frame.shape}, 类型={frame.dtype}, 均值={np.mean(frame) if hasattr(frame, 'mean') else 'N/A'}")
                     time.sleep(0.1)
             
             finally:
