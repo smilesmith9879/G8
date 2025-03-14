@@ -608,7 +608,7 @@ def generate_frames():
     frame_processing_times = []  # 存储帧处理时间统计
     
     # 视频帧率和质量设置
-    TARGET_FPS = 10  # 降低目标帧率以减轻服务器负担
+    TARGET_FPS = 30  # 降低目标帧率以减轻服务器负担
     FRAME_WIDTH = 320
     FRAME_HEIGHT = 240
     JPEG_QUALITY = 70  # 降低JPEG质量以减小数据大小
