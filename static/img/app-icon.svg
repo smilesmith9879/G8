@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180" viewBox="0 0 180 180">
+  <rect width="180" height="180" rx="45" fill="#007AFF"/>
+  <g transform="translate(40, 40)" fill="#FFFFFF">
+    <!-- 小车图标 -->
+    <rect x="20" y="60" width="80" height="40" rx="10" />
+    <circle cx="30" cy="100" r="15" />
+    <circle cx="90" cy="100" r="15" />
+    <rect x="35" y="30" width="50" height="30" rx="5" />
+    <circle cx="50" cy="20" r="10" />
+    <!-- 摄像头 -->
+    <circle cx="50" cy="20" r="5" fill="#007AFF" />
+  </g>
+</svg> 

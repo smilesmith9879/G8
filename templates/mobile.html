@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>AI Smart Car - Mobile</title>
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/app-icon.png') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/all.min.css') }}">
+    <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/nipplejs.min.js') }}"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #000;
+            color: #fff;
+            overflow: hidden;
+            position: fixed;
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+        
+        .container {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            width: 100%;
+            position: relative;
+        }
+        
+        header {
+            padding: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        h1 {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        
+        .status-indicators {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .status-item {
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+        }
+        
+        .status-ok {
+            color: #4cd964;
+        }
+        
+        .status-error {
+            color: #ff3b30;
+        }
+        
+        .video-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            background-color: #111;
+        }
+        
+        #video-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        
+        .video-placeholder {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .video-placeholder i {
+            font-size: 40px;
+            margin-bottom: 10px;
+        }
+        
+        .controls-container {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            background: linear-gradient(to top, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0) 100%);
+        }
+        
+        .joystick-row {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+        }
+        
+        .joystick-container {
+            width: 120px;
+            height: 120px;
+            background-color: rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            position: relative;
+        }
+        
+        .joystick-label {
+            position: absolute;
+            top: -25px;
+            width: 100%;
+            text-align: center;
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.7);
+        }
+        
+        .button-row {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border-radius: 20px;
+            border: none;
+            font-size: 14px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+            color: white;
+        }
+        
+        .btn i {
+            font-size: 16px;
+        }
+        
+        .btn-primary {
+            background-color: #007aff;
+        }
+        
+        .btn-danger {
+            background-color: #ff3b30;
+        }
+        
+        .btn:disabled {
+            opacity: 0.5;
+        }
+        
+        .sensor-data {
+            position: absolute;
+            top: 60px;
+            right: 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border-radius: 10px;
+            padding: 10px;
+            font-size: 12px;
+            z-index: 90;
+            max-width: 120px;
+        }
+        
+        .data-group {
+            margin-bottom: 8px;
+        }
+        
+        .data-group h3 {
+            font-size: 12px;
+            margin-bottom: 3px;
+            color: rgba(255, 255, 255, 0.7);
+        }
+        
+        .data-item {
+            margin-bottom: 2px;
+        }
+        
+        .position-info {
+            position: absolute;
+            bottom: 200px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border-radius: 10px;
+            padding: 10px;
+            font-size: 12px;
+            z-index: 90;
+        }
+        
+        .diagnostic-panel {
+            position: absolute;
+            top: 60px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border-radius: 10px;
+            padding: 10px;
+            font-size: 12px;
+            z-index: 90;
+            max-width: 120px;
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+        
+        .diagnostic-panel.hidden {
+            opacity: 0;
+            transform: translateX(-120%);
+            pointer-events: none;
+        }
+        
+        .diagnostic-item {
+            margin-bottom: 3px;
+        }
+        
+        .toggle-diagnostic {
+            position: absolute;
+            top: 60px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border-radius: 50%;
+            width: 36px;
+            height: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            border: none;
+            font-size: 16px;
+            z-index: 91;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        
+        .toggle-diagnostic:hover {
+            background-color: rgba(0, 0, 0, 0.7);
+        }
+        
+        .toggle-diagnostic.panel-visible {
+            background-color: rgba(0, 122, 255, 0.5);
+        }
+        
+        .slam-toggle {
+            position: absolute;
+            top: 60px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border-radius: 20px;
+            padding: 5px 15px;
+            font-size: 14px;
+            z-index: 90;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .slam-toggle i {
+            font-size: 16px;
+        }
+        
+        .slam-active {
+            color: #4cd964;
+        }
+        
+        .slam-inactive {
+            color: #ff3b30;
+        }
+        
+        #map-display {
+            position: absolute;
+            top: 100px;
+            left: 0;
+            right: 0;
+            bottom: 200px;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 80;
+            pointer-events: none;
+        }
+        
+        #map-image {
+            max-width: 80%;
+            max-height: 80%;
+            opacity: 0.7;
+        }
+        
+        .fullscreen-toggle {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: none;
+            border: none;
+            color: white;
+            font-size: 20px;
+            z-index: 110;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>AI Smart Car</h1>
+            <div class="status-indicators">
+                <div class="status-item" id="robot-status">
+                    {% if robot_available %}
+                    <i class="fas fa-check-circle status-ok"></i>
+                    {% else %}
+                    <i class="fas fa-times-circle status-error"></i>
+                    {% endif %}
+                </div>
+                <div class="status-item" id="camera-status">
+                    {% if camera_available %}
+                    <i class="fas fa-video status-ok"></i>
+                    {% else %}
+                    <i class="fas fa-video-slash status-error"></i>
+                    {% endif %}
+                </div>
+                <div class="status-item" id="slam-status">
+                    {% if slam_available %}
+                    <i class="fas fa-map-marked-alt status-ok"></i>
+                    {% else %}
+                    <i class="fas fa-map-marked-alt status-error"></i>
+                    {% endif %}
+                </div>
+            </div>
+        </header>
+
+        <div class="video-container">
+            <div class="video-placeholder">
+                <i class="fas fa-video"></i>
+                <p>Video feed will appear here</p>
+            </div>
+            <canvas id="video-canvas"></canvas>
+        </div>
+
+        <div class="slam-toggle" id="slam-toggle">
+            <i class="fas fa-map-marked-alt slam-inactive"></i>
+            <span>SLAM</span>
+        </div>
+
+        <div class="sensor-data">
+            <div class="data-group">
+                <h3>Accel</h3>
+                <div class="data-item">X: <span id="accel-x">0.00</span></div>
+                <div class="data-item">Y: <span id="accel-y">0.00</span></div>
+                <div class="data-item">Z: <span id="accel-z">0.00</span></div>
+            </div>
+            <div class="data-group">
+                <h3>Gyro</h3>
+                <div class="data-item">X: <span id="gyro-x">0.00</span></div>
+                <div class="data-item">Y: <span id="gyro-y">0.00</span></div>
+                <div class="data-item">Z: <span id="gyro-z">0.00</span></div>
+            </div>
+        </div>
+
+        <button class="toggle-diagnostic" id="toggle-diagnostic">
+            <i class="fas fa-chart-bar"></i>
+        </button>
+
+        <div class="diagnostic-panel" id="diagnostic-panel">
+            <div class="diagnostic-item">FPS: <span id="fps">0</span></div>
+            <div class="diagnostic-item">Latency: <span id="latency">0</span>ms</div>
+            <div class="diagnostic-item">CPU: <span id="cpu-usage">0</span>%</div>
+            <div class="diagnostic-item">Mem: <span id="mem-usage">0</span>%</div>
+        </div>
+
+        <div class="position-info" id="position-info">
+            <div>X: <span id="pos-x">0.00</span>m</div>
+            <div>Y: <span id="pos-y">0.00</span>m</div>
+            <div>Z: <span id="pos-z">0.00</span>m</div>
+        </div>
+
+        <div id="map-display">
+            <img id="map-image" src="" alt="SLAM Map">
+        </div>
+
+        <button class="fullscreen-toggle" id="fullscreen-toggle">
+            <i class="fas fa-expand"></i>
+        </button>
+
+        <div class="controls-container">
+            <div class="joystick-row">
+                <div class="joystick-container">
+                    <div class="joystick-label">Drive</div>
+                    <div id="car-joystick"></div>
+                </div>
+                <div class="joystick-container">
+                    <div class="joystick-label">Camera</div>
+                    <div id="camera-joystick"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 移动端专用JavaScript
+        document.addEventListener('DOMContentLoaded', function() {
+            // 禁用页面滚动和缩放
+            document.addEventListener('touchmove', function(e) {
+                if (e.touches.length > 1) {
+                    e.preventDefault();
+                }
+            }, { passive: false });
+            
+            // 禁用双击缩放
+            let lastTouchEnd = 0;
+            document.addEventListener('touchend', function(e) {
+                const now = Date.now();
+                if (now - lastTouchEnd < 300) {
+                    e.preventDefault();
+                }
+                lastTouchEnd = now;
+            }, { passive: false });
+            
+            // 全屏切换
+            const fullscreenToggle = document.getElementById('fullscreen-toggle');
+            fullscreenToggle.addEventListener('click', function() {
+                if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen().catch(err => {
+                        console.error(`Error attempting to enable full-screen mode: ${err.message}`);
+                    });
+                } else {
+                    if (document.exitFullscreen) {
+                        document.exitFullscreen();
+                    }
+                }
+            });
+            
+            // 资源监控面板切换
+            const toggleDiagnostic = document.getElementById('toggle-diagnostic');
+            const diagnosticPanel = document.getElementById('diagnostic-panel');
+            
+            // 从本地存储中获取面板状态
+            const isPanelVisible = localStorage.getItem('diagnosticPanelVisible') !== 'false';
+            
+            // 初始化面板状态
+            if (!isPanelVisible) {
+                diagnosticPanel.classList.add('hidden');
+                toggleDiagnostic.classList.remove('panel-visible');
+            } else {
+                toggleDiagnostic.classList.add('panel-visible');
+            }
+            
+            // 添加切换事件
+            toggleDiagnostic.addEventListener('click', function() {
+                diagnosticPanel.classList.toggle('hidden');
+                toggleDiagnostic.classList.toggle('panel-visible');
+                
+                // 保存状态到本地存储
+                localStorage.setItem('diagnosticPanelVisible', !diagnosticPanel.classList.contains('hidden'));
+            });
+            
+            // Socket.IO连接
+            const socket = io({
+                reconnectionAttempts: 10,
+                reconnectionDelay: 1000,
+                timeout: 20000,
+                pingTimeout: 60000,
+                pingInterval: 25000
+            });
+            
+            // 视频画布
+            const videoCanvas = document.getElementById('video-canvas');
+            const ctx = videoCanvas.getContext('2d');
+            const videoPlaceholder = document.querySelector('.video-placeholder');
+            
+            // 调整画布大小
+            function resizeCanvas() {
+                const container = videoCanvas.parentElement;
+                videoCanvas.width = container.clientWidth;
+                videoCanvas.height = container.clientHeight;
+            }
+            
+            window.addEventListener('resize', resizeCanvas);
+            resizeCanvas();
+            
+            // 状态指示器
+            const robotStatus = document.getElementById('robot-status');
+            const cameraStatus = document.getElementById('camera-status');
+            const slamStatus = document.getElementById('slam-status');
+            
+            // SLAM切换
+            const slamToggle = document.getElementById('slam-toggle');
+            let slamActive = false;
+            
+            slamToggle.addEventListener('click', function() {
+                if (slamActive) {
+                    socket.emit('stop_slam');
+                } else {
+                    socket.emit('start_slam');
+                }
+            });
+            
+            // 初始化小摇杆
+            const carJoystick = nipplejs.create({
+                zone: document.getElementById('car-joystick'),
+                mode: 'static',
+                position: { left: '50%', top: '50%' },
+                color: 'rgba(255, 255, 255, 0.5)',
+                size: 100
+            });
+            
+            const cameraJoystick = nipplejs.create({
+                zone: document.getElementById('camera-joystick'),
+                mode: 'static',
+                position: { left: '50%', top: '50%' },
+                color: 'rgba(255, 255, 255, 0.5)',
+                size: 100
+            });
+            
+            // 小车控制
+            let carData = { x: 0, y: 0 };
+            
+            carJoystick.on('move', function(evt, data) {
+                const angle = data.angle.radian;
+                const force = Math.min(1, data.force);
+                
+                carData.x = Math.cos(angle) * force;
+                carData.y = Math.sin(angle) * force;
+                
+                socket.emit('car_control', carData);
+            });
+            
+            carJoystick.on('end', function() {
+                carData = { x: 0, y: 0 };
+                socket.emit('car_control', carData);
+            });
+            
+            // 相机控制
+            let cameraData = { x: 0, y: 0 };
+            
+            cameraJoystick.on('move', function(evt, data) {
+                const angle = data.angle.radian;
+                const force = Math.min(1, data.force);
+                
+                cameraData.x = Math.cos(angle) * force;
+                cameraData.y = Math.sin(angle) * force;
+                
+                socket.emit('gimbal_control', cameraData);
+            });
+            
+            cameraJoystick.on('end', function() {
+                cameraData = { x: 0, y: 0 };
+                socket.emit('gimbal_control', cameraData);
+            });
+            
+            // Socket.IO事件处理
+            socket.on('connect', function() {
+                console.log('Connected to server');
+                
+                // 开始测量延迟
+                setInterval(function() {
+                    pingStart = Date.now();
+                    socket.emit('ping_request');
+                }, 2000);
+                
+                // 自动开始视频流（服务器端已配置为自动开始）
+            });
+            
+            socket.on('disconnect', function() {
+                console.log('Disconnected from server');
+                videoPlaceholder.style.display = 'flex';
+            });
+            
+            // 视频帧处理
+            let frameCount = 0;
+            let lastFrameTime = 0;
+            let fps = 0;
+            
+            socket.on('video_frame', function(data) {
+                videoPlaceholder.style.display = 'none';
+                
+                const img = new Image();
+                img.onload = function() {
+                    // 清除画布
+                    ctx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
+                    
+                    // 计算居中显示的位置和大小
+                    const canvasRatio = videoCanvas.width / videoCanvas.height;
+                    const imgRatio = img.width / img.height;
+                    
+                    let drawWidth, drawHeight, drawX, drawY;
+                    
+                    if (canvasRatio > imgRatio) {
+                        // 画布比图像更宽
+                        drawHeight = videoCanvas.height;
+                        drawWidth = drawHeight * imgRatio;
+                        drawX = (videoCanvas.width - drawWidth) / 2;
+                        drawY = 0;
+                    } else {
+                        // 画布比图像更窄
+                        drawWidth = videoCanvas.width;
+                        drawHeight = drawWidth / imgRatio;
+                        drawX = 0;
+                        drawY = (videoCanvas.height - drawHeight) / 2;
+                    }
+                    
+                    // 绘制图像
+                    ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
+                    
+                    // 计算FPS
+                    const now = performance.now();
+                    frameCount++;
+                    
+                    if (now - lastFrameTime >= 1000) {
+                        fps = frameCount;
+                        frameCount = 0;
+                        lastFrameTime = now;
+                        
+                        // 更新FPS显示
+                        document.getElementById('fps').textContent = fps;
+                    }
+                };
+                
+                img.src = 'data:image/jpeg;base64,' + data.frame;
+            });
+            
+            // SLAM地图处理
+            socket.on('slam_map', function(data) {
+                if (data.map) {
+                    const mapDisplay = document.getElementById('map-display');
+                    const mapImage = document.getElementById('map-image');
+                    
+                    mapImage.src = 'data:image/png;base64,' + data.map;
+                    mapDisplay.style.display = 'flex';
+                }
+            });
+            
+            // SLAM位置更新
+            socket.on('slam_position', function(data) {
+                if (data.position) {
+                    document.getElementById('pos-x').textContent = data.position[0].toFixed(2);
+                    document.getElementById('pos-y').textContent = data.position[1].toFixed(2);
+                    document.getElementById('pos-z').textContent = data.position[2].toFixed(2);
+                }
+            });
+            
+            // SLAM状态更新
+            socket.on('slam_status', function(data) {
+                const icon = slamToggle.querySelector('i');
+                
+                if (data.status === 'started') {
+                    slamActive = true;
+                    icon.className = 'fas fa-map-marked-alt slam-active';
+                } else if (data.status === 'stopped' || data.status === 'error') {
+                    slamActive = false;
+                    icon.className = 'fas fa-map-marked-alt slam-inactive';
+                    
+                    // 隐藏地图
+                    document.getElementById('map-display').style.display = 'none';
+                }
+            });
+            
+            // MPU6050传感器数据更新
+            socket.on('mpu6050_data', function(data) {
+                document.getElementById('accel-x').textContent = data.accel_x;
+                document.getElementById('accel-y').textContent = data.accel_y;
+                document.getElementById('accel-z').textContent = data.accel_z;
+                document.getElementById('gyro-x').textContent = data.gyro_x;
+                document.getElementById('gyro-y').textContent = data.gyro_y;
+                document.getElementById('gyro-z').textContent = data.gyro_z;
+            });
+            
+            // 延迟测量
+            let pingStart = 0;
+            
+            socket.on('ping_response', function() {
+                const latency = Date.now() - pingStart;
+                document.getElementById('latency').textContent = latency;
+                
+                // 根据延迟值设置颜色
+                const latencyElement = document.getElementById('latency');
+                if (latency < 100) {
+                    latencyElement.style.color = '#4cd964'; // 绿色
+                } else if (latency < 300) {
+                    latencyElement.style.color = '#ffcc00'; // 黄色
+                } else {
+                    latencyElement.style.color = '#ff3b30'; // 红色
+                }
+            });
+            
+            // 资源监控更新
+            socket.on('resource_update', function(data) {
+                document.getElementById('cpu-usage').textContent = data.cpu.percent;
+                document.getElementById('mem-usage').textContent = data.memory.percent;
+            });
+            
+            // 状态更新
+            socket.on('status_update', function(data) {
+                // 更新机器人状态
+                if (data.robot_available) {
+                    robotStatus.innerHTML = '<i class="fas fa-check-circle status-ok"></i>';
+                } else {
+                    robotStatus.innerHTML = '<i class="fas fa-times-circle status-error"></i>';
+                }
+                
+                // 更新相机状态
+                if (data.camera_available) {
+                    cameraStatus.innerHTML = '<i class="fas fa-video status-ok"></i>';
+                } else {
+                    cameraStatus.innerHTML = '<i class="fas fa-video-slash status-error"></i>';
+                }
+                
+                // 更新SLAM状态
+                if (data.slam_available) {
+                    slamStatus.innerHTML = '<i class="fas fa-map-marked-alt status-ok"></i>';
+                    slamToggle.style.display = 'flex';
+                } else {
+                    slamStatus.innerHTML = '<i class="fas fa-map-marked-alt status-error"></i>';
+                    slamToggle.style.display = 'none';
+                }
+                
+                // 更新SLAM活动状态
+                if (data.slam_active) {
+                    slamActive = true;
+                    slamToggle.querySelector('i').className = 'fas fa-map-marked-alt slam-active';
+                } else {
+                    slamActive = false;
+                    slamToggle.querySelector('i').className = 'fas fa-map-marked-alt slam-inactive';
+                }
+            });
+        });
+    </script>
+</body>
+</html> 

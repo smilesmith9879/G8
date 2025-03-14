@@ -37,51 +37,64 @@ const gyroZDisplay = document.getElementById('gyro-z');
 const temperatureDisplay = document.getElementById('temperature');
 
 // Canvas context
-const videoContext = videoCanvas.getContext('2d');
+const ctx = videoCanvas.getContext('2d');
 
 // Global variables
 let isStreaming = false;
 let isSlamActive = false;
-let carJoystick = null;
-let cameraJoystick = null;
-let carControlInterval = null;
-let cameraControlInterval = null;
-let carJoystickData = { x: 0, y: 0 };
-let cameraJoystickData = { x: 0, y: 0 };
+let carJoystick;
+let cameraJoystick;
+let carInterval;
+let cameraInterval;
+let carData = { x: 0, y: 0 };
+let cameraData = { x: 0, y: 0 };
+let currentLatency = 0;
+let pingStart = 0;
+let frameBuffer = {
+    frames: [],
+    maxSize: 3,
+    add: function(frame) {
+        if (this.frames.length >= this.maxSize) {
+            this.frames.shift();
+        }
+        this.frames.push(frame);
+    },
+    get: function() {
+        return this.frames.shift();
+    },
+    isEmpty: function() {
+        return this.frames.length === 0;
+    },
+    size: function() {
+        return this.frames.length;
+    }
+};
 
 // 添加性能监控变量
 let frameStats = {
     received: 0,
     displayed: 0,
     errors: 0,
-    lastFrameTime: 0,
-    frameTimes: [],  // 存储最近10帧的处理时间
+    fps: 0,
     avgFps: 0,
-    bufferSize: 0,
-    lastStatsUpdate: Date.now()
+    fpsHistory: [],
+    lastFrameTime: 0,
+    bufferSize: 0
 };
 
-// 用于处理视频流的帧缓冲区
-const frameBuffer = {
-    maxSize: 3,  // 最多缓存3帧
-    frames: [],
-    add: function(frame) {
-        if (this.frames.length >= this.maxSize) {
-            this.frames.shift(); // 移除最旧的帧
-        }
-        this.frames.push(frame);
-        frameStats.bufferSize = this.frames.length;
+// 服务器资源信息
+let serverResources = {
+    cpu: {
+        percent: 0,
+        process_percent: 0
     },
-    getNext: function() {
-        if (this.frames.length > 0) {
-            return this.frames.shift();
-        }
-        return null;
+    memory: {
+        percent: 0,
+        used_mb: 0,
+        total_mb: 0,
+        process_mb: 0
     },
-    clear: function() {
-        this.frames = [];
-        frameStats.bufferSize = 0;
-    }
+    timestamp: 0
 };
 
 // Socket.IO event handlers
@@ -141,15 +154,15 @@ socket.on('video_frame', (data) => {
             // 计算自上一帧的时间差
             if (frameStats.lastFrameTime > 0) {
                 const timeDiff = receiveStartTime - frameStats.lastFrameTime;
-                frameStats.frameTimes.push(timeDiff);
+                frameStats.fpsHistory.push(timeDiff);
                 // 只保留最近10个时间差
-                if (frameStats.frameTimes.length > 10) {
-                    frameStats.frameTimes.shift();
+                if (frameStats.fpsHistory.length > 10) {
+                    frameStats.fpsHistory.shift();
                 }
                 
                 // 计算平均FPS
-                if (frameStats.frameTimes.length > 0) {
-                    const avgTime = frameStats.frameTimes.reduce((a, b) => a + b, 0) / frameStats.frameTimes.length;
+                if (frameStats.fpsHistory.length > 0) {
+                    const avgTime = frameStats.fpsHistory.reduce((a, b) => a + b, 0) / frameStats.fpsHistory.length;
                     frameStats.avgFps = Math.round(1000 / avgTime * 10) / 10;
                 }
             }
@@ -319,7 +332,7 @@ function updateStatusIndicators(data) {
 
 // 创建一个处理帧的函数，可以独立调用
 function processNextFrame() {
-    const frameData = frameBuffer.getNext();
+    const frameData = frameBuffer.get();
     if (frameData) {
         const renderStartTime = Date.now();
         displayVideoFrame(frameData);
@@ -340,7 +353,7 @@ function updateVideoStats() {
     if (statsElement) {
         statsElement.innerHTML = `
             <div>FPS: ${frameStats.avgFps}</div>
-            <div>缓冲: ${frameStats.bufferSize}/${frameBuffer.maxSize}</div>
+            <div>缓冲: ${frameBuffer.size()}/${frameBuffer.maxSize}</div>
             <div>已接收: ${frameStats.received}</div>
         `;
     }
@@ -349,7 +362,7 @@ function updateVideoStats() {
 // Function to display video frame
 function displayVideoFrame(frameData) {
     // 检查是否初始化了Canvas
-    if (!videoCanvas || !videoContext) {
+    if (!videoCanvas || !ctx) {
         console.error('视频画布未初始化');
         return;
     }
@@ -363,12 +376,12 @@ function displayVideoFrame(frameData) {
             console.log(`图像加载成功: ${img.width}x${img.height}`);
             
             // 清除画布
-            videoContext.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
+            ctx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
             
             // 绘制一个边框，确认画布正在被绘制
-            videoContext.strokeStyle = '#00ff00';
-            videoContext.lineWidth = 2;
-            videoContext.strokeRect(1, 1, videoCanvas.width - 2, videoCanvas.height - 2);
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(1, 1, videoCanvas.width - 2, videoCanvas.height - 2);
             
             // 绘制图像，保持纵横比
             const canvasRatio = videoCanvas.width / videoCanvas.height;
@@ -391,17 +404,17 @@ function displayVideoFrame(frameData) {
             }
             
             // 绘制图像
-            videoContext.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
+            ctx.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
             
             // 添加诊断叠加信息
-            videoContext.fillStyle = 'rgba(0, 0, 0, 0.5)';
-            videoContext.fillRect(5, 5, 160, 60);
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.fillRect(5, 5, 160, 60);
             
-            videoContext.font = '12px monospace';
-            videoContext.fillStyle = '#ffffff';
-            videoContext.fillText(`FPS: ${frameStats.avgFps.toFixed(1)}`, 10, 20);
-            videoContext.fillText(`帧: ${frameStats.received}/${frameStats.displayed}`, 10, 35);
-            videoContext.fillText(`缓冲: ${frameStats.bufferSize}/${frameBuffer.maxSize}`, 10, 50);
+            ctx.font = '12px monospace';
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(`FPS: ${frameStats.avgFps.toFixed(1)}`, 10, 20);
+            ctx.fillText(`帧: ${frameStats.received}/${frameStats.displayed}`, 10, 35);
+            ctx.fillText(`缓冲: ${frameBuffer.size()}/${frameBuffer.maxSize}`, 10, 50);
             
             // 更新统计
             frameStats.displayed++;
@@ -416,13 +429,13 @@ function displayVideoFrame(frameData) {
             frameStats.errors++;
             
             // 显示错误信息
-            videoContext.fillStyle = 'red';
-            videoContext.fillRect(0, 0, videoCanvas.width, videoCanvas.height);
-            videoContext.fillStyle = 'white';
-            videoContext.font = '16px Arial';
-            videoContext.textAlign = 'center';
-            videoContext.fillText('图像渲染错误', videoCanvas.width/2, videoCanvas.height/2);
-            videoContext.fillText(renderError.message, videoCanvas.width/2, videoCanvas.height/2 + 30);
+            ctx.fillStyle = 'red';
+            ctx.fillRect(0, 0, videoCanvas.width, videoCanvas.height);
+            ctx.fillStyle = 'white';
+            ctx.font = '16px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('图像渲染错误', videoCanvas.width/2, videoCanvas.height/2);
+            ctx.fillText(renderError.message, videoCanvas.width/2, videoCanvas.height/2 + 30);
             
             // 如果缓冲区中还有帧，处理下一帧
             if (frameBuffer.frames.length > 0) {
@@ -436,13 +449,13 @@ function displayVideoFrame(frameData) {
         frameStats.errors++;
         
         // 显示错误信息在Canvas上
-        videoContext.fillStyle = 'red';
-        videoContext.fillRect(0, 0, videoCanvas.width, videoCanvas.height);
-        videoContext.fillStyle = 'white';
-        videoContext.font = '16px Arial';
-        videoContext.textAlign = 'center';
-        videoContext.fillText('图像加载错误', videoCanvas.width/2, videoCanvas.height/2);
-        videoContext.fillText('请检查网络连接或刷新页面', videoCanvas.width/2, videoCanvas.height/2 + 30);
+        ctx.fillStyle = 'red';
+        ctx.fillRect(0, 0, videoCanvas.width, videoCanvas.height);
+        ctx.fillStyle = 'white';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('图像加载错误', videoCanvas.width/2, videoCanvas.height/2);
+        ctx.fillText('请检查网络连接或刷新页面', videoCanvas.width/2, videoCanvas.height/2 + 30);
         
         // 如果缓冲区中还有帧，处理下一帧
         if (frameBuffer.frames.length > 0) {
@@ -457,13 +470,13 @@ function displayVideoFrame(frameData) {
         frameStats.errors++;
         
         // 显示超时信息
-        videoContext.fillStyle = 'orange';
-        videoContext.fillRect(0, 0, videoCanvas.width, videoCanvas.height);
-        videoContext.fillStyle = 'black';
-        videoContext.font = '16px Arial';
-        videoContext.textAlign = 'center';
-        videoContext.fillText('图像加载超时', videoCanvas.width/2, videoCanvas.height/2);
-        videoContext.fillText('请检查网络连接', videoCanvas.width/2, videoCanvas.height/2 + 30);
+        ctx.fillStyle = 'orange';
+        ctx.fillRect(0, 0, videoCanvas.width, videoCanvas.height);
+        ctx.fillStyle = 'black';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('图像加载超时', videoCanvas.width/2, videoCanvas.height/2);
+        ctx.fillText('请检查网络连接', videoCanvas.width/2, videoCanvas.height/2 + 30);
         
         // 如果缓冲区中还有帧，处理下一帧
         if (frameBuffer.frames.length > 0) {
@@ -509,7 +522,7 @@ function initJoysticks() {
         const x = parseFloat((-data.vector.x).toFixed(2));
         const y = parseFloat((data.vector.y).toFixed(2));
         
-        carJoystickData = { x, y };
+        carData = { x, y };
         
         // Update display
         carXDisplay.textContent = x;
@@ -518,7 +531,7 @@ function initJoysticks() {
     
     carJoystick.on('end', () => {
         // Auto-centering: reset to zero when released
-        carJoystickData = { x: 0, y: 0 };
+        carData = { x: 0, y: 0 };
         
         // Update display
         carXDisplay.textContent = '0';
@@ -545,12 +558,12 @@ function initJoysticks() {
         const x = parseFloat((-data.vector.x).toFixed(2));
         const y = parseFloat((data.vector.y).toFixed(2));
         
-        cameraJoystickData = { x, y };
+        cameraData = { x, y };
     });
     
     cameraJoystick.on('end', () => {
         // Auto-centering: reset to zero when released
-        cameraJoystickData = { x: 0, y: 0 };
+        cameraData = { x: 0, y: 0 };
         
         // Send reset command immediately
         socket.emit('gimbal_control', { x: 0, y: 0 });
@@ -560,24 +573,24 @@ function initJoysticks() {
 // Start control intervals
 function startControlIntervals() {
     // Car control interval (100ms)
-    carControlInterval = setInterval(() => {
-        if (carJoystickData.x !== 0 || carJoystickData.y !== 0) {
-            socket.emit('car_control', carJoystickData);
+    carInterval = setInterval(() => {
+        if (carData.x !== 0 || carData.y !== 0) {
+            socket.emit('car_control', carData);
         }
     }, 100);
     
     // Camera control interval (200ms)
-    cameraControlInterval = setInterval(() => {
-        if (cameraJoystickData.x !== 0 || cameraJoystickData.y !== 0) {
-            socket.emit('gimbal_control', cameraJoystickData);
+    cameraInterval = setInterval(() => {
+        if (cameraData.x !== 0 || cameraData.y !== 0) {
+            socket.emit('gimbal_control', cameraData);
         }
     }, 200);
 }
 
 // Stop control intervals
 function stopControlIntervals() {
-    clearInterval(carControlInterval);
-    clearInterval(cameraControlInterval);
+    clearInterval(carInterval);
+    clearInterval(cameraInterval);
 }
 
 // Start video stream
@@ -687,7 +700,7 @@ document.addEventListener('visibilitychange', () => {
     
     if (document.hidden) {
         // Page is hidden, stop controls but don't stop video
-        if (carJoystickData.x !== 0 || carJoystickData.y !== 0) {
+        if (carData.x !== 0 || carData.y !== 0) {
             socket.emit('car_control', { x: 0, y: 0 });
             console.log('Car stopped due to page hidden');
         }
@@ -964,61 +977,77 @@ function createDiagnosticPanel() {
     const diagnosticPanel = document.createElement('div');
     diagnosticPanel.id = 'diagnostic-panel';
     diagnosticPanel.className = 'diagnostic-panel';
-    diagnosticPanel.innerHTML = `
-        <div class="diagnostic-title">视频流诊断面板</div>
-        <div class="diagnostic-content">
-            <div class="diagnostic-section">
-                <div class="section-title">视频流性能</div>
-                <div class="diagnostic-item">
-                    <div class="diagnostic-label">帧接收率:</div>
-                    <div class="diagnostic-value" id="frame-rate">0 FPS</div>
-                </div>
-                <div class="diagnostic-item">
-                    <div class="diagnostic-label">帧缓冲:</div>
-                    <div class="diagnostic-value" id="frame-buffer">0/3</div>
-                </div>
-                <div class="diagnostic-item">
-                    <div class="diagnostic-label">帧大小:</div>
-                    <div class="diagnostic-value" id="frame-size">0 KB</div>
-                </div>
-                <div class="diagnostic-item">
-                    <div class="diagnostic-label">接收耗时:</div>
-                    <div class="diagnostic-value" id="receive-time">0 ms</div>
-                </div>
-                <div class="diagnostic-item">
-                    <div class="diagnostic-label">渲染耗时:</div>
-                    <div class="diagnostic-value" id="render-time">0 ms</div>
-                </div>
-                <div class="diagnostic-item">
-                    <div class="diagnostic-label">总帧数:</div>
-                    <div class="diagnostic-value" id="total-frames">0</div>
-                </div>
-                <div class="diagnostic-item">
-                    <div class="diagnostic-label">解码错误:</div>
-                    <div class="diagnostic-value" id="decode-errors">0</div>
-                </div>
+    
+    // 添加标题栏和折叠按钮
+    const titleBar = document.createElement('div');
+    titleBar.className = 'diagnostic-title-bar';
+    
+    const title = document.createElement('div');
+    title.className = 'diagnostic-title';
+    title.textContent = '视频流诊断面板';
+    
+    const toggleButton = document.createElement('button');
+    toggleButton.className = 'diagnostic-toggle';
+    toggleButton.innerHTML = '<i class="fas fa-chevron-down"></i>';
+    toggleButton.title = '隐藏/显示诊断面板';
+    
+    titleBar.appendChild(title);
+    titleBar.appendChild(toggleButton);
+    
+    // 创建内容区域
+    const content = document.createElement('div');
+    content.className = 'diagnostic-content';
+    content.innerHTML = `
+        <div class="diagnostic-section">
+            <div class="section-title">视频流性能</div>
+            <div class="diagnostic-item">
+                <div class="diagnostic-label">帧接收率:</div>
+                <div class="diagnostic-value" id="frame-rate">0 FPS</div>
             </div>
-            <div class="diagnostic-section">
-                <div class="section-title">网络状态</div>
-                <div class="diagnostic-item">
-                    <div class="diagnostic-label">连接状态:</div>
-                    <div class="diagnostic-value" id="connection-status">连接中</div>
-                </div>
-                <div class="diagnostic-item">
-                    <div class="diagnostic-label">延迟:</div>
-                    <div class="diagnostic-value" id="latency">-- ms</div>
-                </div>
-                <div class="diagnostic-item">
-                    <div class="diagnostic-label">最后活动:</div>
-                    <div class="diagnostic-value" id="last-activity">--:--:--</div>
-                </div>
+            <div class="diagnostic-item">
+                <div class="diagnostic-label">帧缓冲:</div>
+                <div class="diagnostic-value" id="frame-buffer">0/3</div>
+            </div>
+            <div class="diagnostic-item">
+                <div class="diagnostic-label">帧大小:</div>
+                <div class="diagnostic-value" id="frame-size">0 KB</div>
+            </div>
+            <div class="diagnostic-item">
+                <div class="diagnostic-label">渲染时间:</div>
+                <div class="diagnostic-value" id="render-time">0 ms</div>
             </div>
         </div>
-        <div class="diagnostic-footer">
-            <button id="toggle-diagnostic" class="diagnostic-button">隐藏诊断</button>
-            <button id="clear-diagnostic" class="diagnostic-button">重置统计</button>
+        <div class="diagnostic-section">
+            <div class="section-title">网络状态</div>
+            <div class="diagnostic-item">
+                <div class="diagnostic-label">延迟:</div>
+                <div class="diagnostic-value" id="latency">0 ms</div>
+            </div>
+            <div class="diagnostic-item">
+                <div class="diagnostic-label">连接状态:</div>
+                <div class="diagnostic-value" id="connection-status">已连接</div>
+            </div>
+            <div class="diagnostic-item">
+                <div class="diagnostic-label">最后活动:</div>
+                <div class="diagnostic-value" id="last-activity">刚刚</div>
+            </div>
+        </div>
+        <div class="diagnostic-section">
+            <div class="section-title">服务器资源</div>
+            <div class="diagnostic-item">
+                <div class="diagnostic-label">CPU使用率:</div>
+                <div class="diagnostic-value" id="cpu-usage">0%</div>
+            </div>
+            <div class="diagnostic-item">
+                <div class="diagnostic-label">内存使用率:</div>
+                <div class="diagnostic-value" id="memory-usage">0%</div>
+            </div>
         </div>
     `;
+    
+    // 组装面板
+    diagnosticPanel.appendChild(titleBar);
+    diagnosticPanel.appendChild(content);
     
     // 添加样式
     const style = document.createElement('style');
@@ -1031,39 +1060,61 @@ function createDiagnosticPanel() {
             background-color: rgba(0, 0, 0, 0.7);
             color: white;
             border-radius: 5px;
-            padding: 10px;
+            padding: 0;
             font-family: Arial, sans-serif;
             font-size: 12px;
             z-index: 1000;
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
-            transition: transform 0.3s ease;
+            transition: transform 0.3s ease, height 0.3s ease;
+            overflow: hidden;
         }
         
         .diagnostic-panel.collapsed {
-            transform: translateY(calc(100% - 30px));
+            height: 30px !important;
+        }
+        
+        .diagnostic-title-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px 10px;
+            background-color: rgba(0, 122, 255, 0.7);
+            border-radius: 5px 5px 0 0;
+            cursor: pointer;
         }
         
         .diagnostic-title {
             font-weight: bold;
-            text-align: center;
-            margin-bottom: 10px;
             font-size: 14px;
-            border-bottom: 1px solid #555;
-            padding-bottom: 5px;
+        }
+        
+        .diagnostic-toggle {
+            background: none;
+            border: none;
+            color: white;
             cursor: pointer;
+            padding: 0;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.3s ease;
+        }
+        
+        .diagnostic-panel.collapsed .diagnostic-toggle i {
+            transform: rotate(180deg);
         }
         
         .diagnostic-content {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            margin-bottom: 10px;
+            padding: 10px;
         }
         
         .diagnostic-section {
             border: 1px solid #555;
             border-radius: 4px;
             padding: 8px;
+            margin-bottom: 10px;
         }
         
         .section-title {
@@ -1085,25 +1136,6 @@ function createDiagnosticPanel() {
         .diagnostic-value {
             font-weight: bold;
         }
-        
-        .diagnostic-footer {
-            display: flex;
-            justify-content: space-between;
-        }
-        
-        .diagnostic-button {
-            background-color: #333;
-            color: white;
-            border: 1px solid #555;
-            border-radius: 3px;
-            padding: 4px 8px;
-            cursor: pointer;
-            font-size: 11px;
-        }
-        
-        .diagnostic-button:hover {
-            background-color: #444;
-        }
     `;
     
     // 添加到文档
@@ -1111,39 +1143,63 @@ function createDiagnosticPanel() {
     document.body.appendChild(diagnosticPanel);
     
     // 添加折叠功能
-    const title = diagnosticPanel.querySelector('.diagnostic-title');
-    title.addEventListener('click', function() {
+    const titleBarElement = diagnosticPanel.querySelector('.diagnostic-title-bar');
+    titleBarElement.addEventListener('click', function(e) {
+        // 如果点击的是按钮本身，不处理（让按钮自己的事件处理）
+        if (e.target.closest('.diagnostic-toggle')) {
+            return;
+        }
+        
         diagnosticPanel.classList.toggle('collapsed');
         
-        // 更新按钮文本
-        const toggleButton = document.getElementById('toggle-diagnostic');
+        // 更新按钮图标
+        const toggleButton = diagnosticPanel.querySelector('.diagnostic-toggle i');
         if (toggleButton) {
-            if (diagnosticPanel.classList.contains('collapsed')) {
-                toggleButton.textContent = '显示诊断';
-            } else {
-                toggleButton.textContent = '隐藏诊断';
-            }
+            toggleButton.className = diagnosticPanel.classList.contains('collapsed') 
+                ? 'fas fa-chevron-up' 
+                : 'fas fa-chevron-down';
         }
     });
     
     // 添加按钮功能
-    const toggleButton = document.getElementById('toggle-diagnostic');
-    if (toggleButton) {
-        toggleButton.addEventListener('click', function() {
+    const toggleButtonElement = diagnosticPanel.querySelector('.diagnostic-toggle');
+    if (toggleButtonElement) {
+        toggleButtonElement.addEventListener('click', function(e) {
+            e.stopPropagation(); // 阻止事件冒泡
             diagnosticPanel.classList.toggle('collapsed');
-            this.textContent = diagnosticPanel.classList.contains('collapsed') ? '显示诊断' : '隐藏诊断';
+            
+            // 更新按钮图标
+            const icon = this.querySelector('i');
+            if (icon) {
+                icon.className = diagnosticPanel.classList.contains('collapsed') 
+                    ? 'fas fa-chevron-up' 
+                    : 'fas fa-chevron-down';
+            }
         });
     }
     
-    // 重置统计按钮
-    const clearButton = document.getElementById('clear-diagnostic');
-    if (clearButton) {
-        clearButton.addEventListener('click', function() {
-            resetDiagnosticStats();
-        });
+    // 从本地存储中恢复面板状态
+    const isPanelCollapsed = localStorage.getItem('diagnosticPanelCollapsed') === 'true';
+    if (isPanelCollapsed) {
+        diagnosticPanel.classList.add('collapsed');
+        const icon = diagnosticPanel.querySelector('.diagnostic-toggle i');
+        if (icon) {
+            icon.className = 'fas fa-chevron-up';
+        }
     }
     
-    console.log('Diagnostic panel created');
+    // 保存面板状态到本地存储
+    const observer = new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+            if (mutation.attributeName === 'class') {
+                localStorage.setItem('diagnosticPanelCollapsed', diagnosticPanel.classList.contains('collapsed'));
+            }
+        });
+    });
+    
+    observer.observe(diagnosticPanel, { attributes: true });
+    
+    return diagnosticPanel;
 }
 
 // 重置诊断统计数据
@@ -1151,7 +1207,7 @@ function resetDiagnosticStats() {
     frameStats.received = 0;
     frameStats.displayed = 0;
     frameStats.errors = 0;
-    frameStats.frameTimes = [];
+    frameStats.fpsHistory = [];
     frameStats.avgFps = 0;
     frameStats.bufferSize = 0;
     frameStats.lastFrameTime = 0;
@@ -1169,19 +1225,16 @@ function resetDiagnosticStats() {
 
 // 测量网络延迟
 let lastPingTime = 0;
-let currentLatency = 0;
 
 function measureLatency() {
     lastPingTime = Date.now();
     socket.emit('ping_request');
 }
 
-// 更新诊断面板的值
+// 更新诊断面板
 function updateDiagnosticPanel() {
-    // 检查面板是否已创建
-    if (!document.getElementById('diagnostic-panel')) {
-        createDiagnosticPanel();
-    }
+    const panel = document.getElementById('diagnostic-panel');
+    if (!panel) return;
     
     // 更新帧率
     const frameRateElement = document.getElementById('frame-rate');
@@ -1189,57 +1242,49 @@ function updateDiagnosticPanel() {
         frameRateElement.textContent = `${frameStats.avgFps.toFixed(1)} FPS`;
         
         // 根据帧率设置颜色
-        if (frameStats.avgFps < 5) {
-            frameRateElement.style.color = '#FF5252';
-        } else if (frameStats.avgFps < 10) {
-            frameRateElement.style.color = '#FFC107';
+        if (frameStats.avgFps >= 15) {
+            frameRateElement.style.color = '#4cd964'; // 绿色
+        } else if (frameStats.avgFps >= 10) {
+            frameRateElement.style.color = '#ffcc00'; // 黄色
         } else {
-            frameRateElement.style.color = '#4CAF50';
+            frameRateElement.style.color = '#ff3b30'; // 红色
         }
-    }
-    
-    // 更新帧缓冲
-    const frameBufferElement = document.getElementById('frame-buffer');
-    if (frameBufferElement) {
-        frameBufferElement.textContent = `${frameStats.bufferSize}/${frameBuffer.maxSize}`;
     }
     
     // 更新帧大小
     const frameSizeElement = document.getElementById('frame-size');
     if (frameSizeElement && frameStats.lastFrameSize) {
-        frameSizeElement.textContent = `${(frameStats.lastFrameSize / 1024).toFixed(1)} KB`;
+        const sizeKB = (frameStats.lastFrameSize / 1024).toFixed(1);
+        frameSizeElement.textContent = `${sizeKB} KB`;
     }
     
-    // 更新接收耗时
-    const receiveTimeElement = document.getElementById('receive-time');
-    if (receiveTimeElement && frameStats.lastReceiveTime) {
-        receiveTimeElement.textContent = `${frameStats.lastReceiveTime.toFixed(1)} ms`;
-    }
-    
-    // 更新渲染耗时
+    // 更新渲染时间
     const renderTimeElement = document.getElementById('render-time');
     if (renderTimeElement && frameStats.lastRenderTime) {
         renderTimeElement.textContent = `${frameStats.lastRenderTime.toFixed(1)} ms`;
-    }
-    
-    // 更新总帧数
-    const totalFramesElement = document.getElementById('total-frames');
-    if (totalFramesElement) {
-        totalFramesElement.textContent = frameStats.received.toString();
-    }
-    
-    // 更新解码错误
-    const decodeErrorsElement = document.getElementById('decode-errors');
-    if (decodeErrorsElement) {
-        decodeErrorsElement.textContent = frameStats.errors.toString();
         
-        // 根据错误数设置颜色
-        if (frameStats.errors > 10) {
-            decodeErrorsElement.style.color = '#FF5252';
-        } else if (frameStats.errors > 0) {
-            decodeErrorsElement.style.color = '#FFC107';
+        // 根据渲染时间设置颜色
+        if (frameStats.lastRenderTime < 20) {
+            renderTimeElement.style.color = '#4cd964'; // 绿色
+        } else if (frameStats.lastRenderTime < 50) {
+            renderTimeElement.style.color = '#ffcc00'; // 黄色
         } else {
-            decodeErrorsElement.style.color = '#4CAF50';
+            renderTimeElement.style.color = '#ff3b30'; // 红色
+        }
+    }
+    
+    // 更新延迟
+    const latencyElement = document.getElementById('latency');
+    if (latencyElement && frameStats.latency) {
+        latencyElement.textContent = `${frameStats.latency} ms`;
+        
+        // 根据延迟设置颜色
+        if (frameStats.latency < 100) {
+            latencyElement.style.color = '#4cd964'; // 绿色
+        } else if (frameStats.latency < 300) {
+            latencyElement.style.color = '#ffcc00'; // 黄色
+        } else {
+            latencyElement.style.color = '#ff3b30'; // 红色
         }
     }
     
@@ -1248,33 +1293,70 @@ function updateDiagnosticPanel() {
     if (connectionStatusElement) {
         if (socket.connected) {
             connectionStatusElement.textContent = '已连接';
-            connectionStatusElement.style.color = '#4CAF50';
+            connectionStatusElement.style.color = '#4cd964'; // 绿色
         } else {
-            connectionStatusElement.textContent = '断开连接';
-            connectionStatusElement.style.color = '#FF5252';
-        }
-    }
-    
-    // 更新延迟
-    const latencyElement = document.getElementById('latency');
-    if (latencyElement) {
-        latencyElement.textContent = `${currentLatency} ms`;
-        
-        // 根据延迟设置颜色
-        if (currentLatency > 200) {
-            latencyElement.style.color = '#FF5252';
-        } else if (currentLatency > 100) {
-            latencyElement.style.color = '#FFC107';
-        } else if (currentLatency > 0) {
-            latencyElement.style.color = '#4CAF50';
+            connectionStatusElement.textContent = '已断开';
+            connectionStatusElement.style.color = '#ff3b30'; // 红色
         }
     }
     
     // 更新最后活动时间
     const lastActivityElement = document.getElementById('last-activity');
-    if (lastActivityElement) {
-        const now = new Date();
-        lastActivityElement.textContent = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+    if (lastActivityElement && frameStats.lastFrameTime) {
+        const now = Date.now();
+        const diff = now - frameStats.lastFrameTime;
+        
+        let timeText;
+        if (diff < 1000) {
+            timeText = '刚刚';
+        } else if (diff < 60000) {
+            timeText = `${Math.floor(diff / 1000)}秒前`;
+        } else if (diff < 3600000) {
+            timeText = `${Math.floor(diff / 60000)}分钟前`;
+        } else {
+            timeText = `${Math.floor(diff / 3600000)}小时前`;
+        }
+        
+        lastActivityElement.textContent = timeText;
+        
+        // 根据时间差设置颜色
+        if (diff < 5000) {
+            lastActivityElement.style.color = '#4cd964'; // 绿色
+        } else if (diff < 30000) {
+            lastActivityElement.style.color = '#ffcc00'; // 黄色
+        } else {
+            lastActivityElement.style.color = '#ff3b30'; // 红色
+        }
+    }
+    
+    // 更新CPU和内存使用率
+    const cpuUsageElement = document.getElementById('cpu-usage');
+    const memoryUsageElement = document.getElementById('memory-usage');
+    
+    if (cpuUsageElement && typeof serverResources.cpu !== 'undefined') {
+        cpuUsageElement.textContent = `${serverResources.cpu.percent}%`;
+        
+        // 根据CPU使用率设置颜色
+        if (serverResources.cpu.percent < 50) {
+            cpuUsageElement.style.color = '#4cd964'; // 绿色
+        } else if (serverResources.cpu.percent < 80) {
+            cpuUsageElement.style.color = '#ffcc00'; // 黄色
+        } else {
+            cpuUsageElement.style.color = '#ff3b30'; // 红色
+        }
+    }
+    
+    if (memoryUsageElement && typeof serverResources.memory !== 'undefined') {
+        memoryUsageElement.textContent = `${serverResources.memory.percent}%`;
+        
+        // 根据内存使用率设置颜色
+        if (serverResources.memory.percent < 50) {
+            memoryUsageElement.style.color = '#4cd964'; // 绿色
+        } else if (serverResources.memory.percent < 80) {
+            memoryUsageElement.style.color = '#ffcc00'; // 黄色
+        } else {
+            memoryUsageElement.style.color = '#ff3b30'; // 红色
+        }
     }
 }
 
@@ -1327,4 +1409,39 @@ function validateBase64Data(base64String) {
     
     console.log(`Base64数据验证通过，长度: ${base64String.length}字符`);
     return true;
-} 
+}
+
+// 处理ping响应，计算延迟
+socket.on('ping_response', function() {
+    currentLatency = Date.now() - lastPingTime;
+    frameStats.latency = currentLatency;
+    
+    // 更新诊断面板中的延迟显示
+    updateDiagnosticPanel();
+});
+
+// 处理服务器资源更新
+socket.on('resource_update', function(data) {
+    // 更新服务器资源信息
+    serverResources = data;
+    
+    // 更新诊断面板
+    updateDiagnosticPanel();
+});
+
+// 处理状态更新
+socket.on('status_update', function(data) {
+    updateStatusIndicators(data);
+    
+    // Update SLAM button state
+    startSlamBtn.disabled = !data.slam_available;
+    
+    // Update SLAM status
+    if (data.slam_active) {
+        isSlamActive = true;
+        startSlamBtn.disabled = true;
+        stopSlamBtn.disabled = false;
+        mapPlaceholder.style.display = 'none';
+        mapDisplay.style.display = 'block';
+    }
+}); 
