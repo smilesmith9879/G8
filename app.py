@@ -13,6 +13,17 @@ from flask_socketio import SocketIO, emit
 import cv2
 import numpy as np
 
+# 尝试导入psutil，但允许失败
+try:
+    import psutil
+    psutil_available = True
+except ImportError:
+    psutil_available = False
+    print("psutil库未安装，资源监控功能将被禁用")
+    # 定义一个空的monitor_resources函数
+    def monitor_resources():
+        pass
+
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='AI Smart Four-Wheel Drive Car')
 parser.add_argument('--simulation', action='store_true', help='Run in simulation mode without hardware')
@@ -103,14 +114,34 @@ if not robot_available:
 camera_available = False
 if not args.simulation:
     try:
+        logger.info("Initializing camera with optimized settings...")
         camera = cv2.VideoCapture(0)
-        camera.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+        
+        # 尝试设置为MJPG格式提高效率
+        camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # 增加分辨率，有助于SLAM特征检测
+        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         camera.set(cv2.CAP_PROP_FPS, 15)
+        
+        # 获取实际相机设置
+        actual_width = camera.get(cv2.CAP_PROP_FRAME_WIDTH)
+        actual_height = camera.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        actual_fps = camera.get(cv2.CAP_PROP_FPS)
+        actual_format = camera.get(cv2.CAP_PROP_FOURCC)
+        format_str = chr(int(actual_format) & 0xFF) + chr((int(actual_format) >> 8) & 0xFF) + chr((int(actual_format) >> 16) & 0xFF) + chr((int(actual_format) >> 24) & 0xFF)
+        
+        logger.info(f"Camera settings - Width: {actual_width}, Height: {actual_height}, FPS: {actual_fps}, Format: {format_str}")
+        
+        # 检查相机是否正常工作
         ret, frame = camera.read()
         if ret:
             camera_available = True
-            logger.info("Camera initialized successfully")
+            # 检查帧质量
+            if frame is None or frame.size == 0:
+                logger.error("Camera connected but returned empty frame")
+                camera_available = False
+            else:
+                logger.info(f"Camera initialized successfully: frame shape {frame.shape}")
         else:
             logger.error("Camera connected but failed to capture frame")
             logger.info("Falling back to simulation mode for camera")
@@ -315,6 +346,8 @@ slam_active = False
 slam_thread = None
 gimbal_h_angle = 80  # Initial horizontal angle (PWM9)
 gimbal_v_angle = 40  # Initial vertical angle (PWM10)
+camera_lock = threading.RLock()  # 添加相机资源锁，防止多线程同时访问
+last_resource_check = time.time()  # 资源检查时间记录
 
 # Check if MPU6050 is available
 mpu6050_available = False
@@ -378,50 +411,154 @@ def status():
 # SLAM processing thread
 def slam_processing_thread():
     global slam_active
+    global camera_lock
     
     logger.info("SLAM processing thread started")
+    frame_count = 0
+    error_count = 0
+    last_success_time = time.time()
     
     while slam_active and camera_available and slam_initialized:
         try:
-            # Get a frame from the camera
-            success, frame = camera.read()
-            if not success:
-                logger.error("Failed to read frame for SLAM processing")
-                time.sleep(0.1)
+            # 获取相机锁
+            acquired = camera_lock.acquire(timeout=0.1)  # 设置超时以避免长时间等待
+            if not acquired:
+                logger.warning("SLAM: Failed to acquire camera lock, skipping frame")
+                time.sleep(0.05)  # 短暂等待
                 continue
-            
-            # Process frame with SLAM
-            slam.process_frame(frame)
-            
-            # Generate 2D map
-            map_2d = slam.get_2d_map()
-            
-            # Convert map to base64 for transmission
-            _, buffer = cv2.imencode('.png', map_2d)
-            map_base64 = base64.b64encode(buffer).decode('utf-8')
-            
-            # Emit map to clients
-            socketio.emit('slam_map', {'map': map_base64})
-            
-            # Get current pose
-            pose = slam.get_current_pose()
-            position = pose[0:3, 3].tolist()
-            
-            # Emit position to clients
-            socketio.emit('slam_position', {'position': position})
-            
-            # Limit update rate
-            time.sleep(0.2)
-            
+                
+            try:
+                # 获取相机帧
+                start_time = time.time()
+                success, frame = camera.read()
+                read_time = time.time() - start_time
+                
+                if read_time > 0.1:
+                    logger.warning(f"SLAM: Camera read took {read_time:.3f}s, which is slow")
+                
+                if not success:
+                    error_count += 1
+                    time_since_last = time.time() - last_success_time
+                    logger.error(f"Failed to read frame for SLAM processing (attempt {error_count}, {time_since_last:.1f}s since last success)")
+                    
+                    # 如果连续错误过多，尝试检查相机状态
+                    if error_count % 5 == 0:
+                        if hasattr(camera, 'isOpened'):
+                            is_open = camera.isOpened()
+                            logger.error(f"SLAM: Camera is {'open' if is_open else 'closed'}, checking status...")
+                            
+                            # 检查相机设置
+                            if is_open and not args.simulation:
+                                width = camera.get(cv2.CAP_PROP_FRAME_WIDTH)
+                                height = camera.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                                fps = camera.get(cv2.CAP_PROP_FPS)
+                                format_code = int(camera.get(cv2.CAP_PROP_FOURCC))
+                                format_str = chr(format_code & 0xFF) + chr((format_code >> 8) & 0xFF) + chr((format_code >> 16) & 0xFF) + chr((format_code >> 24) & 0xFF)
+                                logger.error(f"SLAM: Camera settings - Width: {width}, Height: {height}, FPS: {fps}, Format: {format_str}")
+                    time.sleep(0.1)
+                    continue
+                
+                # 重置错误计数和成功时间
+                error_count = 0
+                last_success_time = time.time()
+                frame_count += 1
+                
+                # 检查帧质量
+                if frame is None or frame.size == 0:
+                    logger.error("SLAM: Retrieved empty frame")
+                    continue
+                    
+                # 记录帧信息
+                if frame_count % 10 == 0:
+                    logger.debug(f"SLAM processing frame #{frame_count}, shape: {frame.shape}, type: {frame.dtype}")
+                
+                # 确保帧格式正确 - SLAM通常需要灰度或RGB
+                gray_frame = None
+                if len(frame.shape) == 3 and frame.shape[2] == 3:
+                    # 彩色帧，转换为灰度用于某些SLAM算法
+                    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                elif len(frame.shape) == 2:
+                    # 已经是灰度
+                    gray_frame = frame
+                
+                # 处理帧用于SLAM
+                process_start = time.time()
+                slam.process_frame(frame)  # 使用原始帧或考虑使用灰度帧
+                process_time = time.time() - process_start
+                
+                if process_time > 0.2:  # 如果处理时间超过200ms，记录警告
+                    logger.warning(f"SLAM: Frame processing took {process_time:.3f}s, which may be too slow")
+                
+                # 每10帧记录一次性能信息
+                if frame_count % 10 == 0:
+                    logger.info(f"SLAM processed {frame_count} frames, last frame process time: {process_time:.3f}s")
+                
+                # 获取2D地图
+                map_2d = slam.get_2d_map()
+                
+                # 转换为base64
+                _, buffer = cv2.imencode('.png', map_2d)
+                map_base64 = base64.b64encode(buffer).decode('utf-8')
+                
+                # 发送地图给客户端
+                socketio.emit('slam_map', {'map': map_base64})
+                
+                # 获取当前位姿
+                pose = slam.get_current_pose()
+                position = pose[0:3, 3].tolist()
+                
+                # 发送位置给客户端
+                socketio.emit('slam_position', {'position': position})
+                
+                # 监控系统资源
+                monitor_resources()
+                
+                # 限制更新频率
+                time.sleep(0.2)
+                
+            finally:
+                # 确保在任何情况下都释放锁
+                camera_lock.release()
+                
         except Exception as e:
             logger.error(f"Error in SLAM processing: {e}")
             time.sleep(0.5)
     
-    logger.info("SLAM processing thread stopped")
+    logger.info(f"SLAM processing thread stopped after processing {frame_count} frames")
+
+# 添加资源监控函数
+def monitor_resources():
+    global last_resource_check
+    
+    # 如果psutil不可用，直接返回
+    if not psutil_available:
+        return
+    
+    # 每10秒检查一次系统资源
+    current_time = time.time()
+    if current_time - last_resource_check > 10:
+        try:
+            # 获取系统资源使用情况
+            cpu_percent = psutil.cpu_percent()
+            memory = psutil.virtual_memory()
+            memory_percent = memory.percent
+            
+            # 记录资源使用情况
+            logger.info(f"System resources - CPU: {cpu_percent}%, Memory: {memory_percent}%")
+            
+            # 如果资源使用过高，发出警告
+            if cpu_percent > 80:
+                logger.warning(f"High CPU usage: {cpu_percent}%")
+            if memory_percent > 80:
+                logger.warning(f"High memory usage: {memory_percent}%")
+                
+            last_resource_check = current_time
+        except Exception as e:
+            logger.error(f"Error monitoring system resources: {e}")
 
 # Video streaming function
 def generate_frames():
-    global is_streaming, camera_available, camera
+    global is_streaming, camera_available, camera, camera_lock
     
     logger.info("Video streaming thread started")
     frame_count = 0
@@ -439,118 +576,138 @@ def generate_frames():
         loop_start = time.time()  # 测量每帧处理时间
         
         try:
-            success, frame = camera.read()
-            if not success:
-                error_count += 1
-                logger.error(f"Failed to read frame from camera (attempt {error_count})")
-                if error_count > 5:
-                    logger.error("Too many consecutive frame read failures, checking camera...")
-                    # 尝试重新获取一帧，用于诊断
-                    if hasattr(camera, 'isOpened') and not camera.isOpened():
-                        logger.error("Camera appears to be closed, attempting to reopen")
-                        if not args.simulation:
-                            try:
-                                camera.release()
-                                time.sleep(1)  # 给相机更多时间重置
-                                
-                                # 重新打开相机并设置参数
-                                camera = cv2.VideoCapture(0)
-                                # 尝试设置为MJPG格式提高效率
-                                camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-                                camera.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-                                camera.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-                                camera.set(cv2.CAP_PROP_FPS, TARGET_FPS)
-                                
-                                # 获取实际相机设置
-                                actual_width = camera.get(cv2.CAP_PROP_FRAME_WIDTH)
-                                actual_height = camera.get(cv2.CAP_PROP_FRAME_HEIGHT)
-                                actual_fps = camera.get(cv2.CAP_PROP_FPS)
-                                actual_format = camera.get(cv2.CAP_PROP_FOURCC)
-                                
-                                logger.info(f"Reopened camera settings - Width: {actual_width}, Height: {actual_height}, FPS: {actual_fps}, Format: {chr(int(actual_format) & 0xFF)}{chr((int(actual_format) >> 8) & 0xFF)}{chr((int(actual_format) >> 16) & 0xFF)}{chr((int(actual_format) >> 24) & 0xFF)}")
-                                
-                                ret_test, _ = camera.read()
-                                if ret_test:
-                                    logger.info("Camera successfully reopened")
-                                    error_count = 0
-                                else:
-                                    logger.error("Failed to reopen camera")
+            # 获取相机锁
+            acquired = camera_lock.acquire(timeout=0.1)
+            if not acquired:
+                logger.warning("Video stream: Failed to acquire camera lock, skipping frame")
+                time.sleep(0.01)  # 短暂等待
+                continue
+                
+            try:
+                success, frame = camera.read()
+                if not success:
+                    error_count += 1
+                    logger.error(f"Failed to read frame from camera (attempt {error_count})")
+                    if error_count > 5:
+                        logger.error("Too many consecutive frame read failures, checking camera...")
+                        # 检查相机状态的代码保持不变...
+                        # 尝试重新获取一帧，用于诊断
+                        if hasattr(camera, 'isOpened') and not camera.isOpened():
+                            logger.error("Camera appears to be closed, attempting to reopen")
+                            if not args.simulation:
+                                try:
+                                    camera.release()
+                                    time.sleep(1)  # 给相机更多时间重置
+                                    
+                                    # 重新打开相机并设置参数
+                                    camera = cv2.VideoCapture(0)
+                                    # 尝试设置为MJPG格式提高效率
+                                    camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                                    camera.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+                                    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+                                    camera.set(cv2.CAP_PROP_FPS, TARGET_FPS)
+                                    
+                                    # 获取实际相机设置
+                                    actual_width = camera.get(cv2.CAP_PROP_FRAME_WIDTH)
+                                    actual_height = camera.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                                    actual_fps = camera.get(cv2.CAP_PROP_FPS)
+                                    actual_format = camera.get(cv2.CAP_PROP_FOURCC)
+                                    
+                                    logger.info(f"Reopened camera settings - Width: {actual_width}, Height: {actual_height}, FPS: {actual_fps}, Format: {chr(int(actual_format) & 0xFF)}{chr((int(actual_format) >> 8) & 0xFF)}{chr((int(actual_format) >> 16) & 0xFF)}{chr((int(actual_format) >> 24) & 0xFF)}")
+                                    
+                                    ret_test, _ = camera.read()
+                                    if ret_test:
+                                        logger.info("Camera successfully reopened")
+                                        error_count = 0
+                                    else:
+                                        logger.error("Failed to reopen camera")
+                                        camera_available = False
+                                        break
+                                except Exception as cam_error:
+                                    logger.error(f"Error reopening camera: {cam_error}")
                                     camera_available = False
                                     break
-                            except Exception as cam_error:
-                                logger.error(f"Error reopening camera: {cam_error}")
-                                camera_available = False
-                                break
-                    error_count = 0
-                time.sleep(0.1)
-                continue
-            
-            error_count = 0
-            frame_count += 1
+                        error_count = 0
+                    time.sleep(0.1)
+                    continue
                 
-            # 处理前记录原始帧大小
-            original_shape = frame.shape
-            
-            # 降低处理分辨率以提高性能
-            frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
-            
-            # 简化HUD叠加，减少处理开销
-            if frame_count % 5 == 0:  # 只在每5帧更新一次HUD信息
-                cv2.putText(frame, f"Speed: {current_speed}", (10, 20), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                cv2.putText(frame, f"H: {gimbal_h_angle}°, V: {gimbal_v_angle}°", (10, 40), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            
-            # 确保图像颜色空间正确
-            if len(frame.shape) < 3:
-                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-            elif frame.shape[2] == 1:
-                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-            
-            # 使用优化的JPEG编码参数
-            try:
-                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
-                encode_start = time.time()
-                _, buffer = cv2.imencode('.jpg', frame, encode_param)
-                frame_base64 = base64.b64encode(buffer).decode('utf-8')
-                encode_time = time.time() - encode_start
-                
-                # 为帧添加序号和时间戳，便于调试
-                frame_data = {
-                    'frame': frame_base64,
-                    'count': frame_count,
-                    'time': time.time(),
-                    'size': len(frame_base64)
-                }
-                
-                # 每10帧记录一次详细信息
-                if frame_count % 10 == 0:
-                    logger.debug(f"Frame #{frame_count}: size={len(frame_base64)/1024:.1f}KB, encode_time={encode_time*1000:.1f}ms")
-                
-                # 每秒记录一次性能统计
-                current_time = time.time()
-                if current_time - last_log_time >= 1.0:
-                    fps = len(fps_stats)
-                    fps_stats.clear()
-                    logger.info(f"Streaming performance: {fps} FPS, last frame size: {len(frame_base64)/1024:.1f}KB")
-                    last_log_time = current_time
-                else:
-                    fps_stats.append(1)
-                
-                # 逐个发送帧到各个客户端，而不是广播给所有客户端
-                clients = socketio.server.get_namespace('/')._get_clients()
-                for client_sid in clients:
-                    socketio.emit('video_frame', frame_data, room=client_sid)
-                
-                # 帧率控制
-                process_time = time.time() - loop_start
-                sleep_time = max(0, 1.0/TARGET_FPS - process_time)
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+                error_count = 0
+                frame_count += 1
                     
-            except Exception as encode_error:
-                logger.error(f"Frame encoding error: {encode_error}")
-                time.sleep(0.1)
+                # 处理前记录原始帧大小
+                original_shape = frame.shape
+                
+                # 降低处理分辨率以提高性能
+                frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
+                
+                # 简化HUD叠加，减少处理开销
+                if frame_count % 5 == 0:  # 只在每5帧更新一次HUD信息
+                    cv2.putText(frame, f"Speed: {current_speed}", (10, 20), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    cv2.putText(frame, f"H: {gimbal_h_angle}°, V: {gimbal_v_angle}°", (10, 40), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                
+                # 确保图像颜色空间正确
+                if len(frame.shape) < 3:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                elif frame.shape[2] == 1:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                
+                # 使用优化的JPEG编码参数
+                try:
+                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+                    encode_start = time.time()
+                    _, buffer = cv2.imencode('.jpg', frame, encode_param)
+                    frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                    encode_time = time.time() - encode_start
+                    
+                    # 为帧添加序号和时间戳，便于调试
+                    frame_data = {
+                        'frame': frame_base64,
+                        'count': frame_count,
+                        'time': time.time(),
+                        'size': len(frame_base64)
+                    }
+                    
+                    # 每10帧记录一次详细信息
+                    if frame_count % 10 == 0:
+                        logger.debug(f"Frame #{frame_count}: size={len(frame_base64)/1024:.1f}KB, encode_time={encode_time*1000:.1f}ms")
+                    
+                    # 每秒记录一次性能统计
+                    current_time = time.time()
+                    if current_time - last_log_time >= 1.0:
+                        fps = len(fps_stats)
+                        fps_stats.clear()
+                        logger.info(f"Streaming performance: {fps} FPS, last frame size: {len(frame_base64)/1024:.1f}KB")
+                        last_log_time = current_time
+                    else:
+                        fps_stats.append(1)
+                    
+                    # 逐个发送帧到各个客户端，而不是广播给所有客户端
+                    clients = socketio.server.get_namespace('/')._get_clients()
+                    for client_sid in clients:
+                        socketio.emit('video_frame', frame_data, room=client_sid)
+                    
+                    # 每处理100帧，记录一次总体信息
+                    if frame_count % 100 == 0:
+                        logger.info(f"Streaming: emitted {frame_count} frames so far")
+                    
+                    # 帧率控制
+                    process_time = time.time() - loop_start
+                    sleep_time = max(0, 1.0/TARGET_FPS - process_time)
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
+                        
+                except Exception as encode_error:
+                    logger.error(f"Frame encoding error: {encode_error}")
+                    time.sleep(0.1)
+            
+            finally:
+                # 确保在任何情况下都释放锁
+                camera_lock.release()
+                
+            # 定期监控系统资源
+            monitor_resources()
             
         except Exception as e:
             logger.error(f"Error in video streaming: {e}")
@@ -670,26 +827,58 @@ def handle_stop_stream():
 def handle_start_slam():
     global slam_active, slam_thread
     
+    logger.info(f"Start SLAM request from client: {request.sid}")
+    
     if not slam_active and slam_initialized and camera_available:
         try:
-            # Start SLAM
+            # 检查系统资源是否充足
+            try:
+                cpu_percent = psutil.cpu_percent()
+                memory = psutil.virtual_memory()
+                memory_percent = memory.percent
+                
+                if cpu_percent > 80:
+                    logger.warning(f"Starting SLAM with high CPU usage: {cpu_percent}%")
+                if memory_percent > 80:
+                    logger.warning(f"Starting SLAM with high memory usage: {memory_percent}%")
+            except:
+                logger.info("Unable to check system resources before starting SLAM")
+            
+            # 尝试启动SLAM
+            logger.info("Preparing to start SLAM...")
             if slam.start():
                 slam_active = True
+                # 创建并启动SLAM线程
                 slam_thread = threading.Thread(target=slam_processing_thread)
                 slam_thread.daemon = True
+                
+                # 添加额外线程间延迟，避免相机资源竞争
+                time.sleep(0.5)
+                
                 slam_thread.start()
                 emit('slam_status', {'status': 'started'})
                 logger.info("SLAM started")
             else:
                 emit('slam_status', {'status': 'error', 'message': 'Failed to start SLAM'})
+                logger.error("Failed to start SLAM")
         except Exception as e:
             emit('slam_status', {'status': 'error', 'message': str(e)})
             logger.error(f"Error starting SLAM: {e}")
     else:
-        emit('slam_status', {
-            'status': 'error', 
-            'message': 'SLAM not available, camera not available, or already active'
-        })
+        if slam_active:
+            logger.info("SLAM already active")
+            emit('slam_status', {'status': 'already_active', 'message': 'SLAM is already running'})
+        elif not slam_initialized:
+            logger.error("SLAM not initialized, cannot start")
+            emit('slam_status', {'status': 'error', 'message': 'SLAM not available'})
+        elif not camera_available:
+            logger.error("Camera not available, cannot start SLAM")
+            emit('slam_status', {'status': 'error', 'message': 'Camera not available'})
+        else:
+            emit('slam_status', {
+                'status': 'error', 
+                'message': 'Unknown error starting SLAM'
+            })
 
 @socketio.on('stop_slam')
 def handle_stop_slam():
@@ -816,10 +1005,59 @@ if robot_available:
 
 if __name__ == '__main__':
     try:
+        # 检查必要的依赖库
+        missing_packages = []
+        
+        # 检查psutil
+        try:
+            import psutil
+        except ImportError:
+            missing_packages.append("psutil")
+            logger.warning("psutil library not found. Resource monitoring will be disabled.")
+            # 创建一个空函数以避免调用错误
+            def monitor_resources():
+                pass
+        
+        # 检查OpenCV
+        try:
+            cv2_version = cv2.__version__
+            logger.info(f"Using OpenCV version: {cv2_version}")
+        except:
+            missing_packages.append("opencv-python")
+            logger.error("OpenCV (cv2) not properly installed!")
+        
+        # 检查numpy
+        try:
+            np_version = np.__version__
+            logger.info(f"Using NumPy version: {np_version}")
+        except:
+            missing_packages.append("numpy")
+            logger.error("NumPy not properly installed!")
+        
+        # 如果有缺失的包，显示安装建议
+        if missing_packages:
+            install_cmd = "pip install " + " ".join(missing_packages)
+            logger.warning(f"Missing required packages. Install with: {install_cmd}")
+        
         # Create required directories if they don't exist
         os.makedirs('static', exist_ok=True)
         os.makedirs('templates', exist_ok=True)
         os.makedirs('slam', exist_ok=True)
+        
+        # 记录系统信息
+        try:
+            import platform
+            system_info = platform.uname()
+            logger.info(f"Running on: {system_info.system} {system_info.release}, Python {platform.python_version()}")
+            
+            # 如果psutil可用，获取更多系统信息
+            if 'psutil' not in missing_packages:
+                cpu_count = psutil.cpu_count(logical=False)
+                cpu_logical = psutil.cpu_count(logical=True)
+                memory = psutil.virtual_memory()
+                logger.info(f"System resources: {cpu_count} physical CPU cores ({cpu_logical} logical), {memory.total/(1024*1024*1024):.1f}GB RAM")
+        except:
+            logger.info("Could not retrieve detailed system information")
         
         # Start the Flask app with SocketIO
         logger.info("Starting server on 0.0.0.0:5000")
