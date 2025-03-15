@@ -35,6 +35,9 @@ const gyroXDisplay = document.getElementById('gyro-x');
 const gyroYDisplay = document.getElementById('gyro-y');
 const gyroZDisplay = document.getElementById('gyro-z');
 const temperatureDisplay = document.getElementById('temperature');
+const videoFeed = document.getElementById('video-feed');
+const toggleMapViewBtn = document.getElementById('toggle-map-view');
+const map3dDisplay = document.getElementById('map3d-display');
 
 // Canvas context
 const ctx = videoCanvas.getContext('2d');
@@ -42,12 +45,13 @@ const ctx = videoCanvas.getContext('2d');
 // Global variables
 let isStreaming = false;
 let isSlamActive = false;
+let is3dViewActive = false;
 let carJoystick;
 let cameraJoystick;
 let carInterval;
 let cameraInterval;
-let carData = { x: 0, y: 0 };
-let cameraData = { x: 0, y: 0 };
+let carData = { x: 0, y: 0, client_type: 'web' };
+let cameraData = { x: 0, y: 0, client_type: 'web' };
 let currentLatency = 0;
 let pingStart = 0;
 let frameBuffer = {
@@ -96,6 +100,157 @@ let serverResources = {
     },
     timestamp: 0
 };
+
+// Three.js variables
+let scene, camera, renderer, controls, pointCloud;
+
+// Initialize Three.js scene
+function initThreeJs() {
+    // Create scene
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xf0f0f0);
+    
+    // Create camera
+    camera = new THREE.PerspectiveCamera(75, map3dDisplay.clientWidth / map3dDisplay.clientHeight, 0.1, 1000);
+    camera.position.set(5, 5, 5);
+    camera.lookAt(0, 0, 0);
+    
+    // Create renderer
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(map3dDisplay.clientWidth, map3dDisplay.clientHeight);
+    map3dDisplay.querySelector('#map3d-container').appendChild(renderer.domElement);
+    
+    // Create controls
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.25;
+    
+    // Add grid helper
+    const gridHelper = new THREE.GridHelper(10, 10);
+    scene.add(gridHelper);
+    
+    // Add axes helper
+    const axesHelper = new THREE.AxesHelper(2);
+    scene.add(axesHelper);
+    
+    // Add ambient light
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+    
+    // Add directional light
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+    directionalLight.position.set(5, 5, 5);
+    scene.add(directionalLight);
+    
+    // Create empty point cloud
+    createEmptyPointCloud();
+    
+    // Start animation loop
+    animate();
+    
+    // Handle window resize
+    window.addEventListener('resize', onWindowResize);
+}
+
+// Create empty point cloud
+function createEmptyPointCloud() {
+    const geometry = new THREE.BufferGeometry();
+    const material = new THREE.PointsMaterial({
+        size: 0.05,
+        vertexColors: true
+    });
+    
+    // Create empty buffers
+    const positions = new Float32Array(0);
+    const colors = new Float32Array(0);
+    
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    
+    // Create point cloud
+    pointCloud = new THREE.Points(geometry, material);
+    scene.add(pointCloud);
+}
+
+// Update point cloud with new data
+function updatePointCloud(data) {
+    if (!data || !data.positions || !data.colors || data.count === 0) {
+        return;
+    }
+    
+    // Create geometry
+    const geometry = new THREE.BufferGeometry();
+    
+    // Create position and color arrays
+    const positions = new Float32Array(data.positions);
+    const colors = new Float32Array(data.colors);
+    
+    // Set attributes
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    
+    // Remove old point cloud
+    scene.remove(pointCloud);
+    
+    // Create new point cloud
+    const material = new THREE.PointsMaterial({
+        size: 0.05,
+        vertexColors: true
+    });
+    
+    pointCloud = new THREE.Points(geometry, material);
+    scene.add(pointCloud);
+}
+
+// Animation loop
+function animate() {
+    requestAnimationFrame(animate);
+    
+    // Update controls
+    if (controls) {
+        controls.update();
+    }
+    
+    // Render scene
+    if (renderer && scene && camera) {
+        renderer.render(scene, camera);
+    }
+}
+
+// Handle window resize
+function onWindowResize() {
+    if (camera && renderer && map3dDisplay) {
+        camera.aspect = map3dDisplay.clientWidth / map3dDisplay.clientHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(map3dDisplay.clientWidth, map3dDisplay.clientHeight);
+    }
+}
+
+// Toggle between 2D and 3D map view
+function toggleMapView() {
+    is3dViewActive = !is3dViewActive;
+    
+    if (is3dViewActive) {
+        // Switch to 3D view
+        mapDisplay.style.display = 'none';
+        map3dDisplay.style.display = 'block';
+        
+        // Initialize Three.js if not already initialized
+        if (!scene) {
+            initThreeJs();
+        }
+        
+        // Update button icon
+        toggleMapViewBtn.innerHTML = '<i class="fas fa-map"></i> Toggle 2D View';
+    } else {
+        // Switch to 2D view
+        mapDisplay.style.display = 'flex';
+        map3dDisplay.style.display = 'none';
+        
+        // Update button icon
+        toggleMapViewBtn.innerHTML = '<i class="fas fa-cube"></i> Toggle 3D View';
+    }
+}
 
 // Socket.IO event handlers
 socket.on('connect', () => {
@@ -236,13 +391,20 @@ socket.on('slam_status', (data) => {
         startSlamBtn.disabled = true;
         stopSlamBtn.disabled = false;
         mapPlaceholder.style.display = 'none';
-        mapDisplay.style.display = 'block';
+        
+        // Show the appropriate map view
+        if (is3dViewActive) {
+            map3dDisplay.style.display = 'block';
+        } else {
+            mapDisplay.style.display = 'flex';
+        }
     } else if (data.status === 'stopped') {
         isSlamActive = false;
         startSlamBtn.disabled = false;
         stopSlamBtn.disabled = true;
         mapPlaceholder.style.display = 'flex';
         mapDisplay.style.display = 'none';
+        map3dDisplay.style.display = 'none';
     } else if (data.status === 'error') {
         alert(`SLAM error: ${data.message}`);
         isSlamActive = false;
@@ -264,6 +426,13 @@ socket.on('slam_position', (data) => {
         posXDisplay.textContent = data.position[0].toFixed(2);
         posYDisplay.textContent = data.position[1].toFixed(2);
         posZDisplay.textContent = data.position[2].toFixed(2);
+    }
+});
+
+socket.on('slam_map_3d', (data) => {
+    if (isSlamActive && is3dViewActive) {
+        // Update 3D point cloud
+        updatePointCloud(data);
     }
 });
 
@@ -522,7 +691,7 @@ function initJoysticks() {
         const x = parseFloat((-data.vector.x).toFixed(2));
         const y = parseFloat((data.vector.y).toFixed(2));
         
-        carData = { x, y };
+        carData = { x, y, client_type: 'web' };
         
         // Update display
         carXDisplay.textContent = x;
@@ -531,14 +700,14 @@ function initJoysticks() {
     
     carJoystick.on('end', () => {
         // Auto-centering: reset to zero when released
-        carData = { x: 0, y: 0 };
+        carData = { x: 0, y: 0, client_type: 'web' };
         
         // Update display
         carXDisplay.textContent = '0';
         carYDisplay.textContent = '0';
         
         // Send stop command immediately
-        socket.emit('car_control', { x: 0, y: 0 });
+        socket.emit('car_control', { x: 0, y: 0, client_type: 'web' });
     });
     
     // Camera control joystick (right)
@@ -558,15 +727,15 @@ function initJoysticks() {
         const x = parseFloat((-data.vector.x).toFixed(2));
         const y = parseFloat((data.vector.y).toFixed(2));
         
-        cameraData = { x, y };
+        cameraData = { x, y, client_type: 'web' };
     });
     
     cameraJoystick.on('end', () => {
         // Auto-centering: reset to zero when released
-        cameraData = { x: 0, y: 0 };
+        cameraData = { x: 0, y: 0, client_type: 'web' };
         
         // Send reset command immediately
-        socket.emit('gimbal_control', { x: 0, y: 0 });
+        socket.emit('gimbal_control', { x: 0, y: 0, client_type: 'web' });
     });
 }
 
@@ -625,6 +794,9 @@ startStreamBtn.addEventListener('click', startStream);
 stopStreamBtn.addEventListener('click', stopStream);
 startSlamBtn.addEventListener('click', startSlam);
 stopSlamBtn.addEventListener('click', stopSlam);
+if (toggleMapViewBtn) {
+    toggleMapViewBtn.addEventListener('click', toggleMapView);
+}
 
 // Helper function to convert ArrayBuffer to Base64 (不需要此函数，直接使用base64)
 // 保留此函数以兼容可能的历史代码，但实际上不再使用它
@@ -701,7 +873,7 @@ document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
         // Page is hidden, stop controls but don't stop video
         if (carData.x !== 0 || carData.y !== 0) {
-            socket.emit('car_control', { x: 0, y: 0 });
+            socket.emit('car_control', { x: 0, y: 0, client_type: 'web' });
             console.log('Car stopped due to page hidden');
         }
         stopControlIntervals();
@@ -714,7 +886,7 @@ document.addEventListener('visibilitychange', () => {
 // Handle page unload - only stop the car, don't stop the stream
 window.addEventListener('beforeunload', () => {
     // Stop the car when leaving the page
-    socket.emit('car_control', { x: 0, y: 0 });
+    socket.emit('car_control', { x: 0, y: 0, client_type: 'web' });
     console.log('Car stopped due to page unload');
     // No need to stop the stream here, the socket disconnect event will handle cleanup
 });
@@ -1444,4 +1616,16 @@ socket.on('status_update', function(data) {
         mapPlaceholder.style.display = 'none';
         mapDisplay.style.display = 'block';
     }
-}); 
+});
+
+// Reset car controls
+function resetCarControls() {
+    carData = { x: 0, y: 0, client_type: 'web' };
+    socket.emit('car_control', { x: 0, y: 0, client_type: 'web' });
+}
+
+// Reset camera controls
+function resetCameraControls() {
+    cameraData = { x: 0, y: 0, client_type: 'web' };
+    socket.emit('gimbal_control', { x: 0, y: 0, client_type: 'web' });
+} 

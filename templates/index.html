@@ -8,6 +8,9 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/nipplejs.min.js') }}"></script>
+    <!-- Three.js for 3D visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
     
     <!-- 设备检测和跳转逻辑 -->
     <script>
@@ -118,6 +121,9 @@
                             <button id="stop-slam" class="btn btn-danger" disabled>
                                 <i class="fas fa-stop"></i> Stop SLAM
                             </button>
+                            <button id="toggle-map-view" class="btn btn-info">
+                                <i class="fas fa-cube"></i> Toggle 3D View
+                            </button>
                         </div>
                     </div>
                     <div id="map-placeholder">
@@ -131,6 +137,9 @@
                             <div>Y: <span id="pos-y">0.00</span>m</div>
                             <div>Z: <span id="pos-z">0.00</span>m</div>
                         </div>
+                    </div>
+                    <div id="map3d-display">
+                        <div id="map3d-container"></div>
                     </div>
                 </div>
             </div>

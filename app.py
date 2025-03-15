@@ -162,81 +162,71 @@ mpu_data = {
 mpu_thread = None
 mpu_running = False
 
-# Function to read MPU6050 data
-def read_mpu6050_data():
-    global mpu_running, mpu_data
+# MPU6050数据发送线程
+def mpu6050_data_thread():
+    """周期性读取MPU6050数据并发送到客户端"""
+    global mpu_running
     
     logger.info("MPU6050 data thread started")
     
     while mpu_running and mpu6050_available:
         try:
-            if not args.simulation:
-                # 这里调用适当的MPU6050读取函数获取真实数据
-                try:
-                    # WHO_AM_I寄存器地址
-                    WHO_AM_I = 0x75
-                    # 电源管理寄存器
-                    PWR_MGMT_1 = 0x6B
-                    # 加速度数据寄存器起始地址
-                    ACCEL_XOUT_H = 0x3B
-                    # 温度数据寄存器起始地址
-                    TEMP_OUT_H = 0x41
-                    # 陀螺仪数据寄存器起始地址
-                    GYRO_XOUT_H = 0x43
-                    
-                    # 确保设备唤醒
-                    bus.write_byte_data(mpu_addr, PWR_MGMT_1, 0)
-                    
-                    # 读取加速度数据
-                    accel_data = bus.read_i2c_block_data(mpu_addr, ACCEL_XOUT_H, 6)
-                    accel_x = (accel_data[0] << 8 | accel_data[1]) / 16384.0  # 转换为g
-                    accel_y = (accel_data[2] << 8 | accel_data[3]) / 16384.0  # 转换为g
-                    accel_z = (accel_data[4] << 8 | accel_data[5]) / 16384.0  # 转换为g
-                    
-                    # 读取温度数据
-                    temp_data = bus.read_i2c_block_data(mpu_addr, TEMP_OUT_H, 2)
-                    temperature = ((temp_data[0] << 8 | temp_data[1]) / 340.0) + 36.53  # 转换为摄氏度
-                    
-                    # 读取陀螺仪数据
-                    gyro_data = bus.read_i2c_block_data(mpu_addr, GYRO_XOUT_H, 6)
-                    gyro_x = (gyro_data[0] << 8 | gyro_data[1]) / 131.0  # 转换为度/秒
-                    gyro_y = (gyro_data[2] << 8 | gyro_data[3]) / 131.0  # 转换为度/秒
-                    gyro_z = (gyro_data[4] << 8 | gyro_data[5]) / 131.0  # 转换为度/秒
-                    
-                    # 更新全局数据
-                    mpu_data = {
-                        'accel_x': round(accel_x, 2),
-                        'accel_y': round(accel_y, 2),
-                        'accel_z': round(accel_z, 2),
-                        'gyro_x': round(gyro_x, 2),
-                        'gyro_y': round(gyro_y, 2),
-                        'gyro_z': round(gyro_z, 2),
-                        'temperature': round(temperature, 2)
-                    }
-                except Exception as e:
-                    logger.error(f"Error reading MPU6050 data: {e}")
-            else:
-                # 在模拟模式下生成随机数据
-                mpu_data = {
-                    'accel_x': round(np.random.uniform(-1, 1), 2),
-                    'accel_y': round(np.random.uniform(-1, 1), 2),
-                    'accel_z': round(np.random.uniform(0, 2), 2),  # Z轴通常有重力加速度
-                    'gyro_x': round(np.random.uniform(-10, 10), 2),
-                    'gyro_y': round(np.random.uniform(-10, 10), 2),
-                    'gyro_z': round(np.random.uniform(-10, 10), 2),
-                    'temperature': round(np.random.uniform(20, 30), 2)
-                }
-            
-            # 发送数据给客户端
-            socketio.emit('mpu6050_data', mpu_data)
+            # 读取校准后的MPU6050数据
+            data = read_mpu6050_data()
+            if data:
+                # 发送数据给客户端
+                socketio.emit('mpu6050_data', {
+                    'accel_x': data['accel_x'],
+                    'accel_y': data['accel_y'],
+                    'accel_z': data['accel_z'],
+                    'gyro_x': data['gyro_x'],
+                    'gyro_y': data['gyro_y'],
+                    'gyro_z': data['gyro_z'],
+                    'temperature': data['temp']
+                })
             
             # 限制更新频率
-            time.sleep(0.5)  # 2Hz更新率
+            time.sleep(0.2)  # 5Hz更新率
         except Exception as e:
             logger.error(f"Error in MPU6050 data thread: {e}")
             time.sleep(1)
     
     logger.info("MPU6050 data thread stopped")
+
+# Function to read MPU6050 data
+def read_mpu6050_data():
+    """读取MPU6050传感器数据并应用校准"""
+    if not mpu6050_available or mpu is None:
+        return None
+    
+    try:
+        accel_data = mpu.get_accel_data()
+        gyro_data = mpu.get_gyro_data()
+        temp = mpu.get_temp()
+        
+        # 应用校准
+        if mpu_calibration['calibrated']:
+            accel_data['x'] -= mpu_calibration['accel_bias']['x']
+            accel_data['y'] -= mpu_calibration['accel_bias']['y']
+            accel_data['z'] -= mpu_calibration['accel_bias']['z']
+            gyro_data['x'] -= mpu_calibration['gyro_bias']['x']
+            gyro_data['y'] -= mpu_calibration['gyro_bias']['y']
+            gyro_data['z'] -= mpu_calibration['gyro_bias']['z']
+        
+        return {
+            'accel_x': f"{accel_data['x']:.3f}",
+            'accel_y': f"{accel_data['y']:.3f}",
+            'accel_z': f"{accel_data['z']:.3f}",
+            'gyro_x': f"{gyro_data['x']:.3f}",
+            'gyro_y': f"{gyro_data['y']:.3f}",
+            'gyro_z': f"{gyro_data['z']:.3f}",
+            'temp': f"{temp:.2f}",
+            'raw_accel': accel_data,
+            'raw_gyro': gyro_data
+        }
+    except Exception as e:
+        logger.error(f"Error reading MPU6050 data: {e}")
+        return None
 
 # Simulated camera frame generator
 class SimulatedCamera:
@@ -322,67 +312,117 @@ except ImportError:
     slam_available = False
 
 # Initialize SLAM
-if slam_available and camera_available and not args.simulation:
+slam_initialized = False
+slam_active = False
+slam_thread = None
+mpu6050_available = False
+mpu = None
+mpu_calibration = {
+    'accel_bias': {'x': 0.0, 'y': 0.0, 'z': 0.0},
+    'gyro_bias': {'x': 0.0, 'y': 0.0, 'z': 0.0},
+    'calibrated': False
+}
+
+try:
+    # 检查是否有MPU6050传感器
     try:
-        slam = SLAMWrapper()
-        slam_initialized = True
-        logger.info("SLAM initialized successfully")
+        if not args.simulation:
+            # 尝试导入MPU6050库
+            import mpu6050
+            # 尝试初始化MPU6050
+            mpu = mpu6050.mpu6050(0x68)
+            
+            # 执行MPU6050初始校准
+            logger.info("Performing MPU6050 initial calibration...")
+            accel_x_samples = []
+            accel_y_samples = []
+            accel_z_samples = []
+            gyro_x_samples = []
+            gyro_y_samples = []
+            gyro_z_samples = []
+            
+            # 收集多个样本以计算平均偏差
+            num_samples = 50
+            for i in range(num_samples):
+                try:
+                    accel_data = mpu.get_accel_data()
+                    gyro_data = mpu.get_gyro_data()
+                    
+                    accel_x_samples.append(accel_data['x'])
+                    accel_y_samples.append(accel_data['y'])
+                    accel_z_samples.append(accel_data['z'])
+                    gyro_x_samples.append(gyro_data['x'])
+                    gyro_y_samples.append(gyro_data['y'])
+                    gyro_z_samples.append(gyro_data['z'])
+                    
+                    time.sleep(0.01)  # 短暂延迟以获取不同的读数
+                except Exception as e:
+                    logger.warning(f"Error during MPU6050 calibration sample {i}: {e}")
+            
+            # 计算平均偏差
+            if len(accel_x_samples) > 0:
+                # 加速度计偏差 - 假设Z轴应该是1g (9.81 m/s²)，X和Y轴应该是0g
+                mpu_calibration['accel_bias']['x'] = sum(accel_x_samples) / len(accel_x_samples)
+                mpu_calibration['accel_bias']['y'] = sum(accel_y_samples) / len(accel_y_samples)
+                mpu_calibration['accel_bias']['z'] = sum(accel_z_samples) / len(accel_z_samples) - 1.0  # 减去1g
+                
+                # 陀螺仪偏差 - 静止时应该是0度/秒
+                mpu_calibration['gyro_bias']['x'] = sum(gyro_x_samples) / len(gyro_x_samples)
+                mpu_calibration['gyro_bias']['y'] = sum(gyro_y_samples) / len(gyro_y_samples)
+                mpu_calibration['gyro_bias']['z'] = sum(gyro_z_samples) / len(gyro_z_samples)
+                
+                mpu_calibration['calibrated'] = True
+                
+                logger.info(f"MPU6050 calibration completed. Biases: "
+                           f"Accel (g) - X: {mpu_calibration['accel_bias']['x']:.3f}, "
+                           f"Y: {mpu_calibration['accel_bias']['y']:.3f}, "
+                           f"Z: {mpu_calibration['accel_bias']['z']:.3f}, "
+                           f"Gyro (°/s) - X: {mpu_calibration['gyro_bias']['x']:.3f}, "
+                           f"Y: {mpu_calibration['gyro_bias']['y']:.3f}, "
+                           f"Z: {mpu_calibration['gyro_bias']['z']:.3f}")
+            
+            # 测试读取校准后的数据
+            accel_data = mpu.get_accel_data()
+            gyro_data = mpu.get_gyro_data()
+            temp = mpu.get_temp()
+            
+            # 应用校准
+            if mpu_calibration['calibrated']:
+                accel_data['x'] -= mpu_calibration['accel_bias']['x']
+                accel_data['y'] -= mpu_calibration['accel_bias']['y']
+                accel_data['z'] -= mpu_calibration['accel_bias']['z']
+                gyro_data['x'] -= mpu_calibration['gyro_bias']['x']
+                gyro_data['y'] -= mpu_calibration['gyro_bias']['y']
+                gyro_data['z'] -= mpu_calibration['gyro_bias']['z']
+            
+            logger.info(f"MPU6050 initialized with calibrated data: "
+                       f"Accel (g) - X: {accel_data['x']:.3f}, Y: {accel_data['y']:.3f}, Z: {accel_data['z']:.3f}, "
+                       f"Gyro (°/s) - X: {gyro_data['x']:.3f}, Y: {gyro_data['y']:.3f}, Z: {gyro_data['z']:.3f}, "
+                       f"Temperature: {temp:.2f}°C")
+            
+            mpu6050_available = True
     except Exception as e:
-        slam_initialized = False
-        logger.error(f"Failed to initialize SLAM: {e}")
-        logger.info("Falling back to simulation mode for SLAM")
-else:
-    if args.simulation:
-        logger.info("Running in simulation mode - SLAM not initialized")
-    slam_initialized = slam_available  # In simulation mode, if the module is available, we can use it
+        logger.warning(f"MPU6050 not available: {e}")
+        mpu6050_available = False
+    
+    # 初始化SLAM，如果有MPU6050则使用
+    slam = SLAMWrapper(use_mpu6050=mpu6050_available)
+    slam_initialized = True
+    logger.info("SLAM initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize SLAM: {e}")
+    slam_initialized = False
 
 # Global variables
 current_speed = 0
 is_streaming = False
 streaming_thread = None
-slam_active = False
-slam_thread = None
 gimbal_h_angle = 80  # Initial horizontal angle (PWM9)
 gimbal_v_angle = 40  # Initial vertical angle (PWM10)
 # camera_lock = threading.RLock()  # 移除相机资源锁以提高视频流的流畅性
 last_resource_check = time.time()  # 资源检查时间记录
 resource_monitor_thread = None  # 资源监控线程
 resource_monitoring_active = False  # 资源监控活动状态
-
-# Check if MPU6050 is available
-mpu6050_available = False
-if not args.simulation:
-    try:
-        # 尝试实际初始化MPU6050
-        # 这里只是一个示例，实际代码取决于您的MPU6050库
-        import smbus2 as smbus
-        bus = smbus.SMBus(1)
-        # MPU6050的I2C地址通常是0x68或0x69
-        mpu_addr = 0x68
-        # 尝试读取WHO_AM_I寄存器 (寄存器地址通常是0x75)
-        # 如果能读到数据，说明MPU6050连接正常
-        try:
-            bus.write_byte_data(mpu_addr, 0x6B, 0)  # 唤醒MPU6050
-            whoami = bus.read_byte_data(mpu_addr, 0x75)
-            if whoami:
-                mpu6050_available = True
-                logger.info(f"MPU6050 initialized successfully, WHO_AM_I: {whoami}")
-        except Exception as inner_e:
-            logger.info(f"MPU6050 not responding on address 0x68: {inner_e}")
-            # 尝试备用地址0x69
-            try:
-                mpu_addr = 0x69
-                bus.write_byte_data(mpu_addr, 0x6B, 0)  # 唤醒MPU6050
-                whoami = bus.read_byte_data(mpu_addr, 0x75)
-                if whoami:
-                    mpu6050_available = True
-                    logger.info(f"MPU6050 initialized successfully on alternate address, WHO_AM_I: {whoami}")
-            except Exception as alt_e:
-                logger.info(f"MPU6050 not responding on alternate address 0x69: {alt_e}")
-    except Exception as e:
-        logger.error(f"MPU6050 initialization failed: {e}")
-else:
-    logger.info("Running in simulation mode - MPU6050 not initialized")
 
 # Routes
 @app.route('/')
@@ -444,40 +484,14 @@ def slam_processing_thread():
             
             if not success:
                 error_count += 1
-                time_since_last = time.time() - last_success_time
-                logger.error(f"Failed to read frame for SLAM processing (attempt {error_count}, {time_since_last:.1f}s since last success)")
-                
-                # 如果连续错误过多，尝试检查相机状态
-                if error_count % 5 == 0:
-                    if hasattr(camera, 'isOpened'):
-                        is_open = camera.isOpened()
-                        logger.error(f"SLAM: Camera is {'open' if is_open else 'closed'}, checking status...")
-                        
-                        # 检查相机设置
-                        if is_open and not args.simulation:
-                            width = camera.get(cv2.CAP_PROP_FRAME_WIDTH)
-                            height = camera.get(cv2.CAP_PROP_FRAME_HEIGHT)
-                            fps = camera.get(cv2.CAP_PROP_FPS)
-                            format_code = int(camera.get(cv2.CAP_PROP_FOURCC))
-                            format_str = chr(format_code & 0xFF) + chr((format_code >> 8) & 0xFF) + chr((format_code >> 16) & 0xFF) + chr((format_code >> 24) & 0xFF)
-                            logger.error(f"SLAM: Camera settings - Width: {width}, Height: {height}, FPS: {fps}, Format: {format_str}")
-                time.sleep(0.1)
+                if error_count > 5:
+                    logger.error("SLAM: Multiple camera read failures, stopping SLAM")
+                    slam_active = False
+                    break
                 continue
             
-            # 重置错误计数和成功时间
+            # 重置错误计数
             error_count = 0
-            last_success_time = time.time()
-            frame_count += 1
-            frame_processed = True
-            
-            # 检查帧质量
-            if frame is None or frame.size == 0:
-                logger.error("SLAM: Retrieved empty frame")
-                continue
-                
-            # 记录帧信息
-            if frame_count % 10 == 0:
-                logger.debug(f"SLAM processing frame #{frame_count}, shape: {frame.shape}, type: {frame.dtype}")
             
             # 确保帧格式正确 - SLAM通常需要灰度或RGB
             preprocess_start = time.time()
@@ -490,9 +504,30 @@ def slam_processing_thread():
                 gray_frame = frame
             preprocess_time = time.time() - preprocess_start
             
+            # 如果有MPU6050，读取IMU数据
+            imu_data = None
+            if mpu6050_available:
+                try:
+                    mpu_data = read_mpu6050_data()
+                    if mpu_data:
+                        imu_data = {
+                            "accel": [
+                                float(mpu_data['raw_accel']['x']), 
+                                float(mpu_data['raw_accel']['y']), 
+                                float(mpu_data['raw_accel']['z'])
+                            ],
+                            "gyro": [
+                                float(mpu_data['raw_gyro']['x']), 
+                                float(mpu_data['raw_gyro']['y']), 
+                                float(mpu_data['raw_gyro']['z'])
+                            ]
+                        }
+                except Exception as e:
+                    logger.warning(f"Failed to read MPU6050 data: {e}")
+            
             # 处理帧用于SLAM
             process_start = time.time()
-            slam.process_frame(frame)  # 使用原始帧或考虑使用灰度帧
+            slam.process_frame(frame, imu_data)  # 使用原始帧和IMU数据
             process_time = time.time() - process_start
             
             if process_time > 0.2:  # 如果处理时间超过200ms，记录警告
@@ -530,6 +565,15 @@ def slam_processing_thread():
             # 发送位置给客户端
             socketio.emit('slam_position', {'position': position})
             
+            # 获取3D地图数据
+            map3d_start = time.time()
+            map_3d = slam.get_3d_map_data()
+            map3d_time = time.time() - map3d_start
+            
+            # 发送3D地图数据给客户端
+            if map_3d and map_3d['count'] > 0:
+                socketio.emit('slam_map_3d', map_3d)
+            
             # 每30秒输出一次详细的性能报告
             current_time = time.time()
             if current_time - last_detailed_log >= 30.0 and len(processing_times) > 0:
@@ -538,7 +582,7 @@ def slam_processing_thread():
                 min_process_time = min(processing_times)
                 
                 logger.info(f"SLAM performance report - Average process time: {avg_process_time*1000:.1f}ms, Min: {min_process_time*1000:.1f}ms, Max: {max_process_time*1000:.1f}ms")
-                logger.info(f"Last frame times - Read: {read_time*1000:.1f}ms, Process: {process_time*1000:.1f}ms, Map: {map_time*1000:.1f}ms, Encode: {encode_time*1000:.1f}ms, Emit: {emit_time*1000:.1f}ms, Pose: {pose_time*1000:.1f}ms")
+                logger.info(f"Last frame times - Read: {read_time*1000:.1f}ms, Process: {process_time*1000:.1f}ms, Map: {map_time*1000:.1f}ms, Encode: {encode_time*1000:.1f}ms, Emit: {emit_time*1000:.1f}ms, Pose: {pose_time*1000:.1f}ms, 3D Map: {map3d_time*1000:.1f}ms")
                 
                 # 重置统计数据
                 processing_times = []
@@ -554,6 +598,11 @@ def slam_processing_thread():
             sleep_time = max(0, 0.2 - total_time)
             if sleep_time > 0:
                 time.sleep(sleep_time)
+            
+            # 增加帧计数
+            frame_count += 1
+            frame_processed = True
+            last_success_time = time.time()
             
         except Exception as e:
             logger.error(f"Error in SLAM processing: {e}")
@@ -878,7 +927,7 @@ def handle_connect():
     # Start MPU6050 data thread if it's available and not already running
     if mpu6050_available and not mpu_running:
         mpu_running = True
-        mpu_thread = threading.Thread(target=read_mpu6050_data)
+        mpu_thread = threading.Thread(target=mpu6050_data_thread)
         mpu_thread.daemon = True
         mpu_thread.start()
         logger.info("MPU6050 data thread started for new client")
@@ -912,7 +961,7 @@ def handle_connect():
 
 @socketio.on('disconnect')
 def handle_disconnect(sid=None):
-    global mpu_running, is_streaming, resource_monitoring_active
+    global mpu_running, is_streaming, resource_monitoring_active, mpu_thread
     
     client_id = request.sid
     logger.info(f"Client disconnected: {client_id}")
@@ -929,7 +978,16 @@ def handle_disconnect(sid=None):
     # 检查是否需要停止MPU6050线程
     if active_clients <= 1 and mpu_running:  # 仅剩服务器自身或无连接
         mpu_running = False
-        logger.info("Stopping MPU6050 data thread - no clients left")
+        # 等待MPU6050线程结束
+        if mpu_thread and mpu_thread.is_alive():
+            logger.info("Waiting for MPU6050 thread to finish...")
+            mpu_thread.join(timeout=2.0)  # 最多等待2秒
+            if mpu_thread.is_alive():
+                logger.warning("MPU6050 thread did not terminate within timeout")
+            else:
+                logger.info("MPU6050 thread terminated successfully")
+        mpu_thread = None
+        logger.info("MPU6050 data thread stopped - no clients left")
     
     # 检查是否需要停止资源监控
     if active_clients <= 1 and resource_monitoring_active:
@@ -1067,6 +1125,11 @@ def handle_car_control(data):
     try:
         x = data.get('x', 0)  # -1 (left) to 1 (right)
         y = data.get('y', 0)  # -1 (backward) to 1 (forward)
+        client_type = data.get('client_type', '')  # 'mobile' or 'web'
+        
+        # 如果是移动端，反转X轴以纠正左右方向
+        if client_type == 'mobile':
+            x = -x
         
         # Calculate speed (0-60 as specified in updated requirements)
         speed = min(60, int(abs(max(x, y, key=abs)) * 60))
@@ -1086,12 +1149,12 @@ def handle_car_control(data):
         elif abs(x) > abs(y):  # Left/right movement dominates
             # Reduce speed to 70% when turning as per requirements
             turn_speed = int(speed * 0.7)
-            if x > 0.1:  # Right (修正为左转)
-                robot.turnLeft(turn_speed, 0.1)
-                logger.info(f"Turning left at speed {turn_speed}")
-            elif x < -0.1:  # Left (修正为右转)
+            if x > 0.1:  # Right
                 robot.turnRight(turn_speed, 0.1)
                 logger.info(f"Turning right at speed {turn_speed}")
+            elif x < -0.1:  # Left
+                robot.turnLeft(turn_speed, 0.1)
+                logger.info(f"Turning left at speed {turn_speed}")
             else:  # Stop
                 robot.t_stop(0.1)
                 logger.info("Stopped")
@@ -1115,9 +1178,14 @@ def handle_gimbal_control(data):
     try:
         x = data.get('x', 0)  # -1 (left) to 1 (right)
         y = data.get('y', 0)  # -1 (down) to 1 (up)
+        client_type = data.get('client_type', '')  # 'mobile' or 'web'
         
-        # 反转Y轴值以纠正上下方向
+        # 反转Y轴值以纠正上下方向（对所有客户端）
         y = -y
+        
+        # 如果是移动端，反转X轴以纠正左右方向
+        if client_type == 'mobile':
+            x = -x
         
         # Calculate new angles
         # Horizontal: 80° ± 45° (35° to 125°)

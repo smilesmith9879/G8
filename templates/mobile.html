@@ -8,8 +8,12 @@
     <title>AI Smart Car - Mobile</title>
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/app-icon.png') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/all.min.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/nipplejs.min.js') }}"></script>
+    <!-- Three.js for 3D visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
     <style>
         * {
             margin: 0;
@@ -378,6 +382,10 @@
             <span>SLAM</span>
         </div>
 
+        <div class="map-view-toggle" id="map-view-toggle">
+            <i class="fas fa-cube"></i>
+        </div>
+
         <div class="sensor-data">
             <div class="data-group">
                 <h3>Accel</h3>
@@ -404,14 +412,17 @@
             <div class="diagnostic-item">Mem: <span id="mem-usage">0</span>%</div>
         </div>
 
-        <div class="position-info" id="position-info">
-            <div>X: <span id="pos-x">0.00</span>m</div>
-            <div>Y: <span id="pos-y">0.00</span>m</div>
-            <div>Z: <span id="pos-z">0.00</span>m</div>
+        <div id="map-display" class="map-display">
+            <img id="map-image" src="" alt="SLAM Map">
+            <div class="position-info">
+                <div>X: <span id="pos-x">0.00</span>m</div>
+                <div>Y: <span id="pos-y">0.00</span>m</div>
+                <div>Z: <span id="pos-z">0.00</span>m</div>
+            </div>
         </div>
 
-        <div id="map-display">
-            <img id="map-image" src="" alt="SLAM Map">
+        <div id="map3d-display" class="map3d-display">
+            <div id="map3d-container"></div>
         </div>
 
         <button class="fullscreen-toggle" id="fullscreen-toggle">
@@ -522,7 +533,166 @@
             // SLAM切换
             const slamToggle = document.getElementById('slam-toggle');
             let slamActive = false;
+            let is3dViewActive = false;
             
+            // Three.js变量
+            let scene, camera, renderer, controls, pointCloud;
+            
+            // 初始化Three.js场景
+            function initThreeJs() {
+                // 创建场景
+                scene = new THREE.Scene();
+                scene.background = new THREE.Color(0xf0f0f0);
+                
+                // 创建相机
+                const container = document.getElementById('map3d-container');
+                camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
+                camera.position.set(5, 5, 5);
+                camera.lookAt(0, 0, 0);
+                
+                // 创建渲染器
+                renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setSize(container.clientWidth, container.clientHeight);
+                container.appendChild(renderer.domElement);
+                
+                // 创建控制器
+                controls = new THREE.OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.25;
+                
+                // 添加网格辅助
+                const gridHelper = new THREE.GridHelper(10, 10);
+                scene.add(gridHelper);
+                
+                // 添加坐标轴辅助
+                const axesHelper = new THREE.AxesHelper(2);
+                scene.add(axesHelper);
+                
+                // 添加环境光
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+                scene.add(ambientLight);
+                
+                // 添加方向光
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+                directionalLight.position.set(5, 5, 5);
+                scene.add(directionalLight);
+                
+                // 创建空点云
+                createEmptyPointCloud();
+                
+                // 开始动画循环
+                animate();
+                
+                // 处理窗口大小变化
+                window.addEventListener('resize', onWindowResize);
+            }
+            
+            // 创建空点云
+            function createEmptyPointCloud() {
+                const geometry = new THREE.BufferGeometry();
+                const material = new THREE.PointsMaterial({
+                    size: 0.05,
+                    vertexColors: true
+                });
+                
+                // 创建空缓冲区
+                const positions = new Float32Array(0);
+                const colors = new Float32Array(0);
+                
+                geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+                
+                // 创建点云
+                pointCloud = new THREE.Points(geometry, material);
+                scene.add(pointCloud);
+            }
+            
+            // 更新点云数据
+            function updatePointCloud(data) {
+                if (!data || !data.positions || !data.colors || data.count === 0) {
+                    return;
+                }
+                
+                // 创建几何体
+                const geometry = new THREE.BufferGeometry();
+                
+                // 创建位置和颜色数组
+                const positions = new Float32Array(data.positions);
+                const colors = new Float32Array(data.colors);
+                
+                // 设置属性
+                geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+                
+                // 移除旧点云
+                scene.remove(pointCloud);
+                
+                // 创建新点云
+                const material = new THREE.PointsMaterial({
+                    size: 0.05,
+                    vertexColors: true
+                });
+                
+                pointCloud = new THREE.Points(geometry, material);
+                scene.add(pointCloud);
+            }
+            
+            // 动画循环
+            function animate() {
+                requestAnimationFrame(animate);
+                
+                // 更新控制器
+                if (controls) {
+                    controls.update();
+                }
+                
+                // 渲染场景
+                if (renderer && scene && camera) {
+                    renderer.render(scene, camera);
+                }
+            }
+            
+            // 处理窗口大小变化
+            function onWindowResize() {
+                const container = document.getElementById('map3d-container');
+                if (camera && renderer && container) {
+                    camera.aspect = container.clientWidth / container.clientHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(container.clientWidth, container.clientHeight);
+                }
+            }
+            
+            // 切换2D和3D地图视图
+            function toggleMapView() {
+                is3dViewActive = !is3dViewActive;
+                
+                const mapDisplay = document.getElementById('map-display');
+                const map3dDisplay = document.getElementById('map3d-display');
+                const mapViewToggle = document.getElementById('map-view-toggle');
+                
+                if (is3dViewActive) {
+                    // 切换到3D视图
+                    mapDisplay.style.display = 'none';
+                    map3dDisplay.style.display = 'block';
+                    
+                    // 初始化Three.js（如果尚未初始化）
+                    if (!scene) {
+                        initThreeJs();
+                    }
+                    
+                    // 更新按钮图标
+                    mapViewToggle.innerHTML = '<i class="fas fa-map"></i>';
+                } else {
+                    // 切换到2D视图
+                    mapDisplay.style.display = 'flex';
+                    map3dDisplay.style.display = 'none';
+                    
+                    // 更新按钮图标
+                    mapViewToggle.innerHTML = '<i class="fas fa-cube"></i>';
+                }
+            }
+            
+            // 添加SLAM切换事件监听器
             slamToggle.addEventListener('click', function() {
                 if (slamActive) {
                     socket.emit('stop_slam');
@@ -531,25 +701,11 @@
                 }
             });
             
-            // 初始化小摇杆
-            const carJoystick = nipplejs.create({
-                zone: document.getElementById('car-joystick'),
-                mode: 'static',
-                position: { left: '50%', top: '50%' },
-                color: 'rgba(255, 255, 255, 0.5)',
-                size: 100
-            });
-            
-            const cameraJoystick = nipplejs.create({
-                zone: document.getElementById('camera-joystick'),
-                mode: 'static',
-                position: { left: '50%', top: '50%' },
-                color: 'rgba(255, 255, 255, 0.5)',
-                size: 100
-            });
+            // 添加地图视图切换事件监听器
+            document.getElementById('map-view-toggle').addEventListener('click', toggleMapView);
             
             // 小车控制
-            let carData = { x: 0, y: 0 };
+            let carData = { x: 0, y: 0, client_type: 'mobile' };
             
             carJoystick.on('move', function(evt, data) {
                 const angle = data.angle.radian;
@@ -562,12 +718,12 @@
             });
             
             carJoystick.on('end', function() {
-                carData = { x: 0, y: 0 };
+                carData = { x: 0, y: 0, client_type: 'mobile' };
                 socket.emit('car_control', carData);
             });
             
             // 相机控制
-            let cameraData = { x: 0, y: 0 };
+            let cameraData = { x: 0, y: 0, client_type: 'mobile' };
             
             cameraJoystick.on('move', function(evt, data) {
                 const angle = data.angle.radian;
@@ -580,7 +736,7 @@
             });
             
             cameraJoystick.on('end', function() {
-                cameraData = { x: 0, y: 0 };
+                cameraData = { x: 0, y: 0, client_type: 'mobile' };
                 socket.emit('gimbal_control', cameraData);
             });
             
@@ -662,7 +818,19 @@
                     const mapImage = document.getElementById('map-image');
                     
                     mapImage.src = 'data:image/png;base64,' + data.map;
-                    mapDisplay.style.display = 'flex';
+                    
+                    // 只在2D视图模式下显示
+                    if (!is3dViewActive) {
+                        mapDisplay.style.display = 'flex';
+                    }
+                }
+            });
+            
+            // SLAM 3D地图更新
+            socket.on('slam_map_3d', function(data) {
+                if (slamActive && is3dViewActive) {
+                    // 更新3D点云
+                    updatePointCloud(data);
                 }
             });
             
@@ -678,16 +846,28 @@
             // SLAM状态更新
             socket.on('slam_status', function(data) {
                 const icon = slamToggle.querySelector('i');
+                const mapDisplay = document.getElementById('map-display');
+                const map3dDisplay = document.getElementById('map3d-display');
                 
                 if (data.status === 'started') {
                     slamActive = true;
                     icon.className = 'fas fa-map-marked-alt slam-active';
+                    
+                    // 显示适当的地图视图
+                    if (is3dViewActive) {
+                        map3dDisplay.style.display = 'block';
+                        mapDisplay.style.display = 'none';
+                    } else {
+                        mapDisplay.style.display = 'flex';
+                        map3dDisplay.style.display = 'none';
+                    }
                 } else if (data.status === 'stopped' || data.status === 'error') {
                     slamActive = false;
                     icon.className = 'fas fa-map-marked-alt slam-inactive';
                     
                     // 隐藏地图
-                    document.getElementById('map-display').style.display = 'none';
+                    mapDisplay.style.display = 'none';
+                    map3dDisplay.style.display = 'none';
                 }
             });
             
