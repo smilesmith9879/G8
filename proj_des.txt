@@ -27,6 +27,56 @@ The system employs a client-server architecture with the following key component
    - Servo-driven camera gimbal (2-axis pan/tilt)
    - Raspberry Pi 5 as the main computing platform
 
+## System Parameters and Configurations
+
+### Motion Control Parameters
+- **Maximum Speed**: Limited to 60 units (0-100 scale)
+- **Turning Speed Reduction**: Speed reduced to 70% when turning
+- **Control Sensitivity**: Joystick input is mapped linearly from -1 to 1
+- **Deadzone**: Controls with magnitude less than 0.05 are ignored
+- **Control Frequency**: Control commands are sent continuously while joystick is active
+
+### Camera Gimbal Parameters
+- **Horizontal Servo (Pan)**:
+  - Channel: PWM9
+  - Initial Angle: 80°
+  - Range: 35° to 125° (±45° from center)
+- **Vertical Servo (Tilt)**:
+  - Channel: PWM10
+  - Initial Angle: 40°
+  - Range: 0° to 85° (−40° to +45° from center)
+- **Auto-Centering**: Gimbal returns to default position (80°, 40°) when controls are released
+- **Control Mapping**: Joystick x/y maps to pan/tilt with proportional speed
+
+### MPU6050 IMU Calibration Parameters
+- **Calibration Samples**: 50 samples collected at startup
+- **Accelerometer Bias Removal**:
+  - X-axis: Average of calibration samples
+  - Y-axis: Average of calibration samples
+  - Z-axis: Average of calibration samples minus 1g (gravity compensation)
+- **Gyroscope Bias Removal**:
+  - X-axis: Average of calibration samples
+  - Y-axis: Average of calibration samples
+  - Z-axis: Average of calibration samples
+- **Calibration Timeout**: 5 seconds
+- **IMU Data Frequency**: 20Hz (50ms interval) sampling rate
+
+### Video Streaming Parameters
+- **Target Framerate**: 10 FPS for smoother performance
+- **Resolution**: 320×240 pixels for transmission
+- **JPEG Quality**: 70% (balance between quality and bandwidth)
+- **Camera Settings**:
+  - Capture Resolution: 640×480 pixels
+  - Format: MJPG for efficient capture
+  - Internal Buffer Size: 3 frames
+
+### WebSocket Connection Parameters
+- **Ping Interval**: 25 seconds
+- **Ping Timeout**: 60 seconds
+- **HTTP Buffer Size**: 10MB
+- **Reconnection Attempts**: 10
+- **Reconnection Delay**: 1000ms
+
 ## Key Features
 
 ### Motion Control

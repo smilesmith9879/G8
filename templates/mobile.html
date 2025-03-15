@@ -328,6 +328,47 @@
             opacity: 0.7;
         }
         
+        #map3d-display {
+            position: absolute;
+            top: 100px;
+            left: 0;
+            right: 0;
+            bottom: 200px;
+            display: none;
+            z-index: 80;
+            background-color: rgba(0, 0, 0, 0.2);
+        }
+        
+        #map3d-container {
+            width: 100%;
+            height: 100%;
+        }
+        
+        .map-view-toggle {
+            position: absolute;
+            top: 110px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
+            border-radius: 50%;
+            width: 36px;
+            height: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            border: none;
+            font-size: 16px;
+            z-index: 91;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        
+        .map-view-toggle:hover {
+            background-color: rgba(0, 0, 0, 0.7);
+        }
+        
         .fullscreen-toggle {
             position: absolute;
             top: 10px;
@@ -374,16 +415,28 @@
                 <i class="fas fa-video"></i>
                 <p>Video feed will appear here</p>
             </div>
-            <canvas id="video-canvas"></canvas>
+            <img id="video-stream" src="{{ url_for('video_feed') }}" alt="Video Stream">
+            <div id="loading-indicator">
+                <div class="spinner"></div>
+                <div>Connecting...</div>
+            </div>
+            <button class="fullscreen-toggle" onclick="toggleFullscreen()">
+                <i class="fa fa-expand"></i>
+            </button>
+            <button class="map-view-toggle" onclick="toggleMapView()">
+                <i class="fa fa-map"></i>
+            </button>
+            <div id="map-display">
+                <img id="map-image" src="/static/map.png" alt="Map">
+            </div>
+            <div id="map3d-display">
+                <div id="map3d-container"></div>
+            </div>
         </div>
 
         <div class="slam-toggle" id="slam-toggle">
             <i class="fas fa-map-marked-alt slam-inactive"></i>
             <span>SLAM</span>
-        </div>
-
-        <div class="map-view-toggle" id="map-view-toggle">
-            <i class="fas fa-cube"></i>
         </div>
 
         <div class="sensor-data">
@@ -411,23 +464,6 @@
             <div class="diagnostic-item">CPU: <span id="cpu-usage">0</span>%</div>
             <div class="diagnostic-item">Mem: <span id="mem-usage">0</span>%</div>
         </div>
-
-        <div id="map-display" class="map-display">
-            <img id="map-image" src="" alt="SLAM Map">
-            <div class="position-info">
-                <div>X: <span id="pos-x">0.00</span>m</div>
-                <div>Y: <span id="pos-y">0.00</span>m</div>
-                <div>Z: <span id="pos-z">0.00</span>m</div>
-            </div>
-        </div>
-
-        <div id="map3d-display" class="map3d-display">
-            <div id="map3d-container"></div>
-        </div>
-
-        <button class="fullscreen-toggle" id="fullscreen-toggle">
-            <i class="fas fa-expand"></i>
-        </button>
 
         <div class="controls-container">
             <div class="joystick-row">
@@ -500,6 +536,35 @@
                 // 保存状态到本地存储
                 localStorage.setItem('diagnosticPanelVisible', !diagnosticPanel.classList.contains('hidden'));
             });
+            
+            // 初始化摇杆控制
+            const carJoystickOptions = {
+                zone: document.getElementById('car-joystick'),
+                mode: 'static',
+                position: {left: '50%', top: '50%'},
+                color: 'white',
+                size: 100,
+                lockX: false,
+                lockY: false,
+                restJoystick: true,
+                restOpacity: 0.6
+            };
+            
+            const cameraJoystickOptions = {
+                zone: document.getElementById('camera-joystick'),
+                mode: 'static',
+                position: {left: '50%', top: '50%'},
+                color: 'white',
+                size: 100,
+                lockX: false,
+                lockY: false,
+                restJoystick: true,
+                restOpacity: 0.6
+            };
+            
+            // 创建摇杆实例
+            const carJoystick = nipplejs.create(carJoystickOptions);
+            const cameraJoystick = nipplejs.create(cameraJoystickOptions);
             
             // Socket.IO连接
             const socket = io({
@@ -711,13 +776,16 @@
                 const angle = data.angle.radian;
                 const force = Math.min(1, data.force);
                 
+                // 计算x和y分量
                 carData.x = Math.cos(angle) * force;
                 carData.y = Math.sin(angle) * force;
                 
+                // 发送控制命令
                 socket.emit('car_control', carData);
             });
             
             carJoystick.on('end', function() {
+                // 停止小车
                 carData = { x: 0, y: 0, client_type: 'mobile' };
                 socket.emit('car_control', carData);
             });
@@ -729,217 +797,188 @@
                 const angle = data.angle.radian;
                 const force = Math.min(1, data.force);
                 
+                // 计算x和y分量
                 cameraData.x = Math.cos(angle) * force;
                 cameraData.y = Math.sin(angle) * force;
                 
+                // 发送控制命令
                 socket.emit('gimbal_control', cameraData);
             });
             
             cameraJoystick.on('end', function() {
+                // 停止云台
                 cameraData = { x: 0, y: 0, client_type: 'mobile' };
                 socket.emit('gimbal_control', cameraData);
             });
             
-            // Socket.IO事件处理
+            // 添加Socket.IO事件处理程序
+            
+            // 连接事件
             socket.on('connect', function() {
-                console.log('Connected to server');
+                console.log('已连接到服务器');
+                document.getElementById('connection-status').classList.remove('disconnected');
+                document.getElementById('connection-status').classList.add('connected');
                 
-                // 开始测量延迟
-                setInterval(function() {
-                    pingStart = Date.now();
-                    socket.emit('ping_request');
-                }, 2000);
-                
-                // 自动开始视频流（服务器端已配置为自动开始）
+                // 请求初始状态
+                socket.emit('get_status');
             });
             
+            // 断开连接事件
             socket.on('disconnect', function() {
-                console.log('Disconnected from server');
-                videoPlaceholder.style.display = 'flex';
+                console.log('与服务器断开连接');
+                document.getElementById('connection-status').classList.remove('connected');
+                document.getElementById('connection-status').classList.add('disconnected');
             });
             
-            // 视频帧处理
-            let frameCount = 0;
-            let lastFrameTime = 0;
-            let fps = 0;
-            
-            socket.on('video_frame', function(data) {
-                videoPlaceholder.style.display = 'none';
+            // 状态更新事件
+            socket.on('status_update', function(data) {
+                // 更新机器人状态
+                updateRobotStatus(data.robot_available);
                 
-                const img = new Image();
-                img.onload = function() {
-                    // 清除画布
-                    ctx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
-                    
-                    // 计算居中显示的位置和大小
-                    const canvasRatio = videoCanvas.width / videoCanvas.height;
-                    const imgRatio = img.width / img.height;
-                    
-                    let drawWidth, drawHeight, drawX, drawY;
-                    
-                    if (canvasRatio > imgRatio) {
-                        // 画布比图像更宽
-                        drawHeight = videoCanvas.height;
-                        drawWidth = drawHeight * imgRatio;
-                        drawX = (videoCanvas.width - drawWidth) / 2;
-                        drawY = 0;
-                    } else {
-                        // 画布比图像更窄
-                        drawWidth = videoCanvas.width;
-                        drawHeight = drawWidth / imgRatio;
-                        drawX = 0;
-                        drawY = (videoCanvas.height - drawHeight) / 2;
-                    }
-                    
-                    // 绘制图像
-                    ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
-                    
-                    // 计算FPS
-                    const now = performance.now();
-                    frameCount++;
-                    
-                    if (now - lastFrameTime >= 1000) {
-                        fps = frameCount;
-                        frameCount = 0;
-                        lastFrameTime = now;
-                        
-                        // 更新FPS显示
-                        document.getElementById('fps').textContent = fps;
-                    }
-                };
+                // 更新相机状态
+                updateCameraStatus(data.camera_available);
                 
-                img.src = 'data:image/jpeg;base64,' + data.frame;
+                // 更新SLAM状态
+                updateSlamStatus(data.slam_available, data.slam_active);
             });
             
-            // SLAM地图处理
-            socket.on('slam_map', function(data) {
-                if (data.map) {
-                    const mapDisplay = document.getElementById('map-display');
-                    const mapImage = document.getElementById('map-image');
-                    
-                    mapImage.src = 'data:image/png;base64,' + data.map;
-                    
-                    // 只在2D视图模式下显示
-                    if (!is3dViewActive) {
-                        mapDisplay.style.display = 'flex';
-                    }
-                }
+            // 资源使用情况更新
+            socket.on('resource_usage', function(data) {
+                document.getElementById('cpu-usage').textContent = data.cpu;
+                document.getElementById('mem-usage').textContent = data.memory;
             });
             
-            // SLAM 3D地图更新
-            socket.on('slam_map_3d', function(data) {
-                if (slamActive && is3dViewActive) {
-                    // 更新3D点云
-                    updatePointCloud(data);
-                }
-            });
-            
-            // SLAM位置更新
-            socket.on('slam_position', function(data) {
-                if (data.position) {
-                    document.getElementById('pos-x').textContent = data.position[0].toFixed(2);
-                    document.getElementById('pos-y').textContent = data.position[1].toFixed(2);
-                    document.getElementById('pos-z').textContent = data.position[2].toFixed(2);
-                }
+            // MPU6050数据更新
+            socket.on('mpu6050_data', function(data) {
+                // 如果需要，可以在这里更新MPU6050数据显示
             });
             
             // SLAM状态更新
             socket.on('slam_status', function(data) {
-                const icon = slamToggle.querySelector('i');
-                const mapDisplay = document.getElementById('map-display');
-                const map3dDisplay = document.getElementById('map3d-display');
-                
-                if (data.status === 'started') {
-                    slamActive = true;
-                    icon.className = 'fas fa-map-marked-alt slam-active';
-                    
-                    // 显示适当的地图视图
-                    if (is3dViewActive) {
-                        map3dDisplay.style.display = 'block';
-                        mapDisplay.style.display = 'none';
-                    } else {
-                        mapDisplay.style.display = 'flex';
-                        map3dDisplay.style.display = 'none';
-                    }
-                } else if (data.status === 'stopped' || data.status === 'error') {
-                    slamActive = false;
-                    icon.className = 'fas fa-map-marked-alt slam-inactive';
-                    
-                    // 隐藏地图
-                    mapDisplay.style.display = 'none';
-                    map3dDisplay.style.display = 'none';
+                updateSlamStatus(data.initialized, data.active);
+            });
+            
+            // 地图更新
+            socket.on('map_update', function(data) {
+                if (data.image) {
+                    document.getElementById('map-image').src = 'data:image/png;base64,' + data.image;
                 }
             });
             
-            // MPU6050传感器数据更新
-            socket.on('mpu6050_data', function(data) {
-                document.getElementById('accel-x').textContent = data.accel_x;
-                document.getElementById('accel-y').textContent = data.accel_y;
-                document.getElementById('accel-z').textContent = data.accel_z;
-                document.getElementById('gyro-x').textContent = data.gyro_x;
-                document.getElementById('gyro-y').textContent = data.gyro_y;
-                document.getElementById('gyro-z').textContent = data.gyro_z;
-            });
+            // 状态更新函数
+            function updateRobotStatus(available) {
+                const status = document.getElementById('robot-status');
+                if (available) {
+                    status.classList.remove('inactive');
+                    status.classList.add('active');
+                } else {
+                    status.classList.remove('active');
+                    status.classList.add('inactive');
+                }
+            }
             
-            // 延迟测量
-            let pingStart = 0;
+            function updateCameraStatus(available) {
+                const status = document.getElementById('camera-status');
+                if (available) {
+                    status.classList.remove('inactive');
+                    status.classList.add('active');
+                } else {
+                    status.classList.remove('active');
+                    status.classList.add('inactive');
+                }
+            }
             
-            socket.on('ping_response', function() {
-                const latency = Date.now() - pingStart;
-                document.getElementById('latency').textContent = latency;
-                
-                // 根据延迟值设置颜色
-                const latencyElement = document.getElementById('latency');
-                if (latency < 100) {
-                    latencyElement.style.color = '#4cd964'; // 绿色
-                } else if (latency < 300) {
-                    latencyElement.style.color = '#ffcc00'; // 黄色
+            function updateSlamStatus(available, active) {
+                const status = document.getElementById('slam-status');
+                if (active) {
+                    status.classList.remove('inactive');
+                    status.classList.add('active');
+                } else if (available) {
+                    status.classList.remove('active');
+                    status.classList.remove('inactive');
+                    status.classList.add('standby');
                 } else {
-                    latencyElement.style.color = '#ff3b30'; // 红色
+                    status.classList.remove('active');
+                    status.classList.remove('standby');
+                    status.classList.add('inactive');
                 }
-            });
-            
-            // 资源监控更新
-            socket.on('resource_update', function(data) {
-                document.getElementById('cpu-usage').textContent = data.cpu.percent;
-                document.getElementById('mem-usage').textContent = data.memory.percent;
-            });
-            
-            // 状态更新
-            socket.on('status_update', function(data) {
-                // 更新机器人状态
-                if (data.robot_available) {
-                    robotStatus.innerHTML = '<i class="fas fa-check-circle status-ok"></i>';
-                } else {
-                    robotStatus.innerHTML = '<i class="fas fa-times-circle status-error"></i>';
-                }
-                
-                // 更新相机状态
-                if (data.camera_available) {
-                    cameraStatus.innerHTML = '<i class="fas fa-video status-ok"></i>';
-                } else {
-                    cameraStatus.innerHTML = '<i class="fas fa-video-slash status-error"></i>';
-                }
-                
-                // 更新SLAM状态
-                if (data.slam_available) {
-                    slamStatus.innerHTML = '<i class="fas fa-map-marked-alt status-ok"></i>';
-                    slamToggle.style.display = 'flex';
-                } else {
-                    slamStatus.innerHTML = '<i class="fas fa-map-marked-alt status-error"></i>';
-                    slamToggle.style.display = 'none';
-                }
-                
-                // 更新SLAM活动状态
-                if (data.slam_active) {
-                    slamActive = true;
-                    slamToggle.querySelector('i').className = 'fas fa-map-marked-alt slam-active';
-                } else {
-                    slamActive = false;
-                    slamToggle.querySelector('i').className = 'fas fa-map-marked-alt slam-inactive';
-                }
-            });
+            }
         });
+
+        // Map view management
+        let isMapVisible = false;
+        let is3DMapVisible = false;
+        
+        function toggleMapView() {
+            if (!isMapVisible && !is3DMapVisible) {
+                // Show 2D map
+                document.getElementById('map-display').style.display = 'flex';
+                isMapVisible = true;
+            } else if (isMapVisible) {
+                // Switch to 3D map if available
+                document.getElementById('map-display').style.display = 'none';
+                isMapVisible = false;
+                
+                if (window.init3DMap) {
+                    document.getElementById('map3d-display').style.display = 'block';
+                    is3DMapVisible = true;
+                    
+                    if (!window.map3dInitialized && window.init3DMap) {
+                        window.init3DMap();
+                        window.map3dInitialized = true;
+                    }
+                }
+            } else {
+                // Hide all maps
+                document.getElementById('map3d-display').style.display = 'none';
+                is3DMapVisible = false;
+            }
+        }
+        
+        // Fullscreen toggle
+        function toggleFullscreen() {
+            const videoContainer = document.getElementById('video-container');
+            const icon = document.querySelector('.fullscreen-toggle i');
+            
+            if (!document.fullscreenElement) {
+                if (videoContainer.requestFullscreen) {
+                    videoContainer.requestFullscreen();
+                } else if (videoContainer.webkitRequestFullscreen) {
+                    videoContainer.webkitRequestFullscreen();
+                } else if (videoContainer.msRequestFullscreen) {
+                    videoContainer.msRequestFullscreen();
+                }
+                icon.classList.remove('fa-expand');
+                icon.classList.add('fa-compress');
+            } else {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) {
+                    document.webkitExitFullscreen();
+                } else if (document.msExitFullscreen) {
+                    document.msExitFullscreen();
+                }
+                icon.classList.remove('fa-compress');
+                icon.classList.add('fa-expand');
+            }
+        }
+        
+        // Listen for fullscreen change events
+        document.addEventListener('fullscreenchange', updateFullscreenIcon);
+        document.addEventListener('webkitfullscreenchange', updateFullscreenIcon);
+        document.addEventListener('mozfullscreenchange', updateFullscreenIcon);
+        document.addEventListener('MSFullscreenChange', updateFullscreenIcon);
+        
+        function updateFullscreenIcon() {
+            const icon = document.querySelector('.fullscreen-toggle i');
+            if (document.fullscreenElement) {
+                icon.classList.remove('fa-expand');
+                icon.classList.add('fa-compress');
+            } else {
+                icon.classList.remove('fa-compress');
+                icon.classList.add('fa-expand');
+            }
+        }
     </script>
 </body>
 </html> 
